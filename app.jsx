@@ -51,6 +51,15 @@ const WED_TXT = {title:"WellEd Labs Domain Assignment Instructions:", body:"Plea
 const VOCAB_TXT = {title:"WellEd Labs Vocab Instructions:", body:"Please complete assigned vocab flashcards and/or quizzes on WellEd Labs. Login to the platform using the instructions in your Wise \"Full Practice Exam Instructions\" Module and toggle to the Vocab section in the top right of the page, so that you see the vocab sets and quizzes you are to complete.  https://ats.practicetest.io/sign-in"};
 const TIME_TXT = {title:"Time Drilling Instructions:", body:"Time limits are indicated in parentheses before each worksheet name. Please set a timer for the allotted minutes before beginning each worksheet and stop working when time expires. Mark any unfinished questions clearly so we can discuss them in the next session."};
 const fmtInstr = (o)=>`**${o.title}** ${o.body}`;
+// Convert our markdown-style `**bold**` output to safe HTML
+const mdBoldToHtml = (text)=>{
+  const esc = (s)=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return esc(text||"")
+    .split("\n")
+    .map(line=>line.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>'))
+    .map(line=>line.trim()===""?"<br/>":`<div>${line||"&nbsp;"}</div>`)
+    .join("");
+};
 
 /* ============ STYLE HELPERS ============ */
 const INP={border:"1px solid #cbd5e1",borderRadius:7,padding:"7px 11px",fontSize:13,outline:"none",width:"100%",background:"#fff",color:"#1e293b"};
@@ -105,12 +114,28 @@ async function parseDiagnosticPdf(file){
     if(line.length)lines.push(line.join(" ").trim());
     fullText += "\n" + lines.join("\n");
   }
-  // Detect quiz type from title
+
+  // Detect subject/module from the QUIZ NAME area (top of document + filename), not entire body.
+  // Typical ZipGrade header has "Quiz: <name>" or the name on its own line near the top.
+  const headerArea = fullText.slice(0, 800) + "\n" + (file.name || "");
   let subject="Unknown", module=null;
-  if(/SECTION\s*1[-\s]*READING/i.test(fullText) || (/READING/i.test(fullText) && !/MATH/i.test(fullText.split("TAGGED")[0]||""))) subject = "Reading & Writing";
-  if(/MATH\s*MOD\w*\s*\.?\s*1/i.test(fullText)){ subject = "Math"; module = 1; }
-  else if(/MATH\s*MOD\w*\s*\.?\s*2/i.test(fullText)){ subject = "Math"; module = 2; }
-  else if(/MATH/i.test(fullText) && subject==="Unknown"){ subject = "Math"; }
+  const isMath = /\bmath\b|mathematics/i.test(headerArea);
+  const isReading = /reading|writing|\br\s*&?\s*w\b|verbal|english/i.test(headerArea);
+  // Module detection: look for "Mod", "Module", or " 1"/" 2" near "math"
+  const modMatch = headerArea.match(/mod(?:ule)?\s*\.?\s*(\d)/i);
+  if(isMath){
+    subject = "Math";
+    if(modMatch) module = Number(modMatch[1]);
+    else if(/\b(m1|math1|math\s*1|part\s*1|section\s*1)\b/i.test(headerArea)) module = 1;
+    else if(/\b(m2|math2|math\s*2|part\s*2|section\s*2)\b/i.test(headerArea)) module = 2;
+  } else if(isReading){
+    subject = "Reading & Writing";
+  } else {
+    // Fall back: if tag area is dominated by R&W domains, mark as R&W; else math
+    const tagArea = (fullText.split(/TAGGED/i)[1]||"").toLowerCase();
+    if(/c&s|eoi|sec|info\/ideas|craft|reading|writing/i.test(tagArea)) subject = "Reading & Writing";
+    else if(/alg|advmath|psda|geo/i.test(tagArea)) subject = "Math";
+  }
 
   const pctMatch = fullText.match(/Percent\s*Correct:?\s*([\d.]+)/i);
   const earnedMatch = fullText.match(/Earned\s*Points:?\s*(\d+)/i);
@@ -122,11 +147,8 @@ async function parseDiagnosticPdf(file){
   const tagSection = fullText.split(/TAGGED\s*QUESTIONS\s*&?\s*QUIZ/i)[1] || "";
   const cleaned = tagSection.replace(/\s+/g," ").trim();
   const rows = [];
-  // Match: "!SAT <name...> <earn> <poss> <pct>" where the name is anything until we hit "number number float" at the end
-  // Split at each "!SAT " occurrence, then parse the trailing 3 numbers off each chunk.
   const chunks = cleaned.split(/(?=!SAT\s)/g).filter(c=>c.trim().startsWith("!SAT"));
   for(const chunk of chunks){
-    // End of chunk: "<name> <int> <int> <float>"
     const m = chunk.match(/^(!SAT\s+.+?)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*$/);
     if(!m) continue;
     let name = m[1].replace(/^!SAT\s+/,"").replace(/\s*\(2024\)\s*$/,"").replace(/\s+/g," ").trim();
@@ -199,6 +221,58 @@ Object.entries(_rawTagMap).forEach(([k,v])=>{
   TAG_MAP[normTag(k)] = obj;
 });
 
+// Fuzzy tag lookup: exact match first, then partial contains, then keyword signature
+function lookupTag(raw){
+  const n = normTag(raw);
+  if(TAG_MAP[n]) return TAG_MAP[n];
+  // Substring match — try longest known key that's a substring of the normalized tag
+  const keys = Object.keys(TAG_MAP).sort((a,b)=>b.length-a.length);
+  for(const k of keys){ if(n.includes(k) || k.includes(n)) return TAG_MAP[k]; }
+  // Keyword signature matching for common variants
+  const lc = raw.toLowerCase();
+  // Math subdomains
+  if(/linear.*one.*variable|1\s*var|one\s*variable/i.test(lc) && /linear/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Algebra",name:"Linear Equations (1 Variable)"};
+  if(/linear.*two.*variable|2\s*var|two\s*variable/i.test(lc) && /linear/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Algebra",name:"Linear Equations (2 Variables)"};
+  if(/linear.*function/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Algebra",name:"Linear Functions"};
+  if(/linear.*inequalit/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Algebra",name:"Linear Inequalities"};
+  if(/system.*linear/i.test(lc))    return {subject:"Math",kind:"sub",domain:"Algebra",name:"Systems of Linear Equations"};
+  if(/equivalent.*expression/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Advanced Math",name:"Equivalent Expressions"};
+  if(/nonlinear.*equation/i.test(lc))    return {subject:"Math",kind:"sub",domain:"Advanced Math",name:"Nonlinear Equations"};
+  if(/nonlinear.*function/i.test(lc))    return {subject:"Math",kind:"sub",domain:"Advanced Math",name:"Nonlinear Functions"};
+  if(/percentage|percent/i.test(lc))     return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Percentages"};
+  if(/ratio|rate|proportion|unit/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Ratios, Rates, Proportions, Units"};
+  if(/one[\s-]*var.*data|1[\s-]*var.*data/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"One-Variable Data"};
+  if(/two[\s-]*var.*data|2[\s-]*var.*data/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Two-Variable Data"};
+  if(/probability/i.test(lc))                         return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Probability"};
+  if(/inference|margin.*error/i.test(lc))             return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Inference & Margin of Error"};
+  if(/statistic.*claim|observ.*stud|experiment/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Problem-Solving & Data Analysis",name:"Evaluating Statistical Claims"};
+  if(/area|volume/i.test(lc))           return {subject:"Math",kind:"sub",domain:"Geometry & Trigonometry",name:"Area & Volume"};
+  if(/circle/i.test(lc))                return {subject:"Math",kind:"sub",domain:"Geometry & Trigonometry",name:"Circles"};
+  if(/right.*triangle|trigonometry/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Geometry & Trigonometry",name:"Right Triangles & Trigonometry"};
+  if(/line.*angle.*triangle/i.test(lc)) return {subject:"Math",kind:"sub",domain:"Geometry & Trigonometry",name:"Lines, Angles, & Triangles"};
+  // R&W subdomains
+  if(/cross.*text.*connection/i.test(lc)) return {subject:"Reading & Writing",kind:"sub",domain:"Craft & Structure",name:"Cross Text Connections"};
+  if(/text.*structure.*purpose|structure.*purpose/i.test(lc)) return {subject:"Reading & Writing",kind:"sub",domain:"Craft & Structure",name:"Text Structure & Purpose"};
+  if(/word.*in.*context/i.test(lc))       return {subject:"Reading & Writing",kind:"sub",domain:"Craft & Structure",name:"Words in Context"};
+  if(/central.*idea/i.test(lc))           return {subject:"Reading & Writing",kind:"sub",domain:"Information & Ideas",name:"Central Ideas & Details"};
+  if(/command.*evidence/i.test(lc))       return {subject:"Reading & Writing",kind:"sub",domain:"Information & Ideas",name:"Command of Evidence"};
+  if(/inference/i.test(lc) && /reading|info|idea/i.test(lc)) return {subject:"Reading & Writing",kind:"sub",domain:"Information & Ideas",name:"Inferences"};
+  if(/rhetorical.*synthesis|synthesis/i.test(lc)) return {subject:"Reading & Writing",kind:"sub",domain:"Expression of Ideas",name:"Rhetorical Synthesis"};
+  if(/transition/i.test(lc))                      return {subject:"Reading & Writing",kind:"sub",domain:"Expression of Ideas",name:"Transitions"};
+  if(/form.*structure.*sense/i.test(lc))          return {subject:"Reading & Writing",kind:"sub",domain:"Standard English Conventions",name:"Form, Structure, & Sense"};
+  if(/boundaries/i.test(lc))                       return {subject:"Reading & Writing",kind:"sub",domain:"Standard English Conventions",name:"Boundaries"};
+  // Domain-only fallbacks
+  if(/^alg/i.test(lc) || /algebra/i.test(lc))    return {subject:"Math",kind:"domain",name:"Algebra"};
+  if(/adv.*math/i.test(lc))                       return {subject:"Math",kind:"domain",name:"Advanced Math"};
+  if(/psda|problem.*solving.*data|data.*analysis/i.test(lc)) return {subject:"Math",kind:"domain",name:"Problem-Solving & Data Analysis"};
+  if(/^geo/i.test(lc) || /geometry/i.test(lc))    return {subject:"Math",kind:"domain",name:"Geometry & Trigonometry"};
+  if(/craft.*structure/i.test(lc))                return {subject:"Reading & Writing",kind:"domain",name:"Craft & Structure"};
+  if(/information.*idea|info.*idea/i.test(lc))    return {subject:"Reading & Writing",kind:"domain",name:"Information & Ideas"};
+  if(/expression.*idea/i.test(lc))                return {subject:"Reading & Writing",kind:"domain",name:"Expression of Ideas"};
+  if(/standard.*english|conventions/i.test(lc))   return {subject:"Reading & Writing",kind:"domain",name:"Standard English Conventions"};
+  return null;
+}
+
 // Build a student's diagnostic profile from parsed results.
 // Math module 1 + module 2 are merged into one Math section; Reading is its own.
 function buildDiagnosticProfile(parsedList){
@@ -211,13 +285,24 @@ function buildDiagnosticProfile(parsedList){
       sectionTotals[res.subject].count += 1;
     }
     (res.tags||[]).forEach(t=>{
-      const map = TAG_MAP[normTag(t.tag)];
-      if(!map) return;
-      const slot = map.kind==="domain"?domains:subs;
-      const key = map.kind==="domain"?`${map.subject}|${map.name}`:`${map.subject}|${map.domain}|${map.name}`;
-      if(!slot[key]) slot[key]={earn:0,poss:0,subject:map.subject,domain:map.domain||map.name,name:map.name};
-      slot[key].earn += t.earn;
-      slot[key].poss += t.poss;
+      const map = lookupTag(t.tag);
+      if(!map){ console.warn("Unmapped diagnostic tag:", t.tag); return; }
+      // Add to subdomain slot AND roll up to domain slot
+      if(map.kind==="sub"){
+        const sKey = `${map.subject}|${map.domain}|${map.name}`;
+        if(!subs[sKey]) subs[sKey]={earn:0,poss:0,subject:map.subject,domain:map.domain,name:map.name};
+        subs[sKey].earn += t.earn;
+        subs[sKey].poss += t.poss;
+        const dKey = `${map.subject}|${map.domain}`;
+        if(!domains[dKey]) domains[dKey]={earn:0,poss:0,subject:map.subject,domain:map.domain,name:map.domain};
+        domains[dKey].earn += t.earn;
+        domains[dKey].poss += t.poss;
+      } else {
+        const dKey = `${map.subject}|${map.name}`;
+        if(!domains[dKey]) domains[dKey]={earn:0,poss:0,subject:map.subject,domain:map.name,name:map.name};
+        domains[dKey].earn += t.earn;
+        domains[dKey].poss += t.poss;
+      }
     });
   });
   const fmt=(rec)=>({...rec,pct:rec.poss?Math.round((rec.earn/rec.poss)*100):null});
@@ -449,6 +534,89 @@ function App(){
   }
 
   const copyOut=()=>{if(!output)return;navigator.clipboard.writeText(output).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});};
+  const copyRichOut=()=>{
+    if(!output)return;
+    const html = mdBoldToHtml(output);
+    const plain = output.replace(/\*\*/g,"");
+    try{
+      const item = new ClipboardItem({
+        "text/html": new Blob([`<div style="font-family:Segoe UI,system-ui,sans-serif;font-size:13px;line-height:1.55;">${html}</div>`],{type:"text/html"}),
+        "text/plain": new Blob([plain],{type:"text/plain"}),
+      });
+      navigator.clipboard.write([item]).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);showToast("Copied with formatting");});
+    }catch(err){
+      // Fallback: copy plain
+      navigator.clipboard.writeText(plain).then(()=>showToast("Copied (plain)"));
+    }
+  };
+  const downloadPdf=()=>{
+    if(!output){showToast("Nothing to export");return;}
+    if(!window.jspdf){showToast("PDF library not loaded");return;}
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:"pt",format:"letter"});
+    const margin = 54, pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const wrapW = pageW - margin*2;
+    let y = margin;
+    // Header
+    doc.setFontSize(16); doc.setFont("helvetica","bold");
+    doc.setTextColor(0,50,88);
+    doc.text("Affordable Tutoring Solutions", margin, y); y += 20;
+    doc.setFontSize(11); doc.setFont("helvetica","normal"); doc.setTextColor(100,116,139);
+    const studentName = curStudent?.name || "";
+    doc.text(`${studentName ? studentName + " — " : ""}PSM Assignment`, margin, y); y += 8;
+    doc.text(todayStr(), margin, y); y += 16;
+    doc.setDrawColor(226,232,240); doc.line(margin, y, pageW-margin, y); y += 14;
+    // Body
+    doc.setTextColor(30,41,59);
+    const paras = output.split("\n");
+    paras.forEach(raw=>{
+      if(raw.trim()===""){ y += 6; return; }
+      // Detect bold: **X** segments; render bold headers as larger
+      const isHeader = /^\*\*[^*]+\*\*\s*$/.test(raw.trim()) || /^\*\*[^*]+:\*\*/.test(raw.trim());
+      // Strip bold asterisks for PDF rendering (we'll set font weight based on detection)
+      const segments = [];
+      const rx = /\*\*([^*]+)\*\*/g;
+      let lastIdx = 0, m;
+      while((m = rx.exec(raw))!==null){
+        if(m.index>lastIdx) segments.push({bold:false,text:raw.slice(lastIdx,m.index)});
+        segments.push({bold:true,text:m[1]});
+        lastIdx = m.index + m[0].length;
+      }
+      if(lastIdx<raw.length) segments.push({bold:false,text:raw.slice(lastIdx)});
+      // Join segments into a rendered string; use wrapping based on full text
+      const fullText = segments.map(s=>s.text).join("");
+      doc.setFontSize(isHeader?12:10);
+      doc.setFont("helvetica", isHeader?"bold":"normal");
+      const lines = doc.splitTextToSize(fullText, wrapW);
+      lines.forEach(line=>{
+        if(y > pageH - margin){ doc.addPage(); y = margin; }
+        // If line contains bold fragments, render segment-by-segment
+        if(segments.some(s=>s.bold) && lines.length===1){
+          let x = margin;
+          segments.forEach(seg=>{
+            doc.setFont("helvetica", seg.bold?"bold":"normal");
+            doc.text(seg.text, x, y);
+            x += doc.getTextWidth(seg.text);
+          });
+        } else {
+          doc.text(line, margin, y);
+        }
+        y += isHeader?14:13;
+      });
+      y += 2;
+    });
+    // Footer
+    const pageCount = doc.getNumberOfPages();
+    for(let i=1;i<=pageCount;i++){
+      doc.setPage(i);
+      doc.setFontSize(8); doc.setFont("helvetica","normal"); doc.setTextColor(148,163,184);
+      doc.text(`Affordable Tutoring Solutions · Aidan Meyers · ameyers@affordabletutoringsolutions.org`, margin, pageH-24);
+      doc.text(`Page ${i} / ${pageCount}`, pageW-margin-40, pageH-24);
+    }
+    const safeName = (studentName||"student").replace(/[^a-zA-Z0-9-_]/g,"_");
+    doc.save(`PSM_${safeName}_${todayStr()}.pdf`);
+    showToast("PDF downloaded");
+  };
   const addStudent=()=>{if(!newS.name.trim())return;setStudents(prev=>[...prev,{...newS,id:uid(),dateAdded:todayStr(),assignments:[],scores:[],diagnostics:[]}]);setNewS({name:"",grade:"",tutor:"",notes:""});setShowAdd(false);showToast("Student added");};
   const openProfile=(st)=>{setProfile(st);setPtab("history");setPaChk({});setPaSubj("All");setPaSrch("");setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});setTab("students");};
 
@@ -609,7 +777,7 @@ function App(){
           addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,
           addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,
           selWS,selWeDom,selVocab,totalQs,examType,
-          generate,output,copyOut,copied,
+          generate,output,copyOut,copyRichOut,downloadPdf,copied,
           lastAssignedDate,
         }}/>}
 
@@ -618,7 +786,7 @@ function App(){
         {tab==="students"&&profile&&p&&<StudentProfile {...{p,setProfile,ptab,setPtab,
           paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,
           sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,
-          handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,
+          handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,showToast,
         }}/>}
 
         {tab==="heatmap"&&<HeatMapTab {...{students,openProfile}}/>}
@@ -645,7 +813,7 @@ function GeneratorTab(props){
     addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,
     addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,
     selWS,selWeDom,selVocab,totalQs,examType,
-    generate,output,copyOut,copied,lastAssignedDate} = props;
+    generate,output,copyOut,copyRichOut,downloadPdf,copied,lastAssignedDate} = props;
 
   const totalSelected = selWS.length + selWeDom.length + selVocab.length + (addBB?1:0) + (addWE?1:0);
 
@@ -871,11 +1039,19 @@ function GeneratorTab(props){
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         <button onClick={generate} style={{...mkBtn(B2,"#fff"),padding:"13px 20px",fontSize:14,boxShadow:"0 3px 10px rgba(0,74,121,.3)"}}>⚡ Generate Assignment</button>
         <div style={{...CARD,flex:1,display:"flex",flexDirection:"column"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexShrink:0,flexWrap:"wrap",gap:6}}>
             <div style={{fontSize:13,fontWeight:800,color:B2}}>Output</div>
-            <button onClick={copyOut} disabled={!output} style={{...mkBtn(copied?"#22c55e":"#f1f5f9",copied?"#fff":"#475569"),padding:"5px 14px",fontSize:12}}>{copied?"✓ Copied!":"📋 Copy"}</button>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <button onClick={copyRichOut} disabled={!output} title="Copy with bold formatting preserved" style={{...mkBtn(copied?"#22c55e":"#eff6ff",copied?"#fff":B2),padding:"5px 10px",fontSize:11}}>{copied?"✓ Copied!":"📋 Copy Rich"}</button>
+              <button onClick={copyOut} disabled={!output} title="Copy plain text with asterisks" style={{...mkBtn("#f1f5f9","#475569"),padding:"5px 10px",fontSize:11}}>📄 Plain</button>
+              <button onClick={downloadPdf} disabled={!output} title="Download as PDF" style={{...mkBtn("#dc2626","#fff"),padding:"5px 10px",fontSize:11}}>📑 PDF</button>
+            </div>
           </div>
-          <textarea readOnly value={output||"Generate an assignment to see output here..."} style={{flex:1,border:"1.5px solid #e2e8f0",borderRadius:8,padding:12,fontSize:11,fontFamily:"monospace",color:output?"#1e293b":"#94a3b8",resize:"none",background:"#f8fafc",lineHeight:1.6,minHeight:260}}/>
+          {output ? (
+            <div style={{flex:1,border:"1.5px solid #e2e8f0",borderRadius:8,padding:14,fontSize:12,color:"#1e293b",background:"#f8fafc",lineHeight:1.55,minHeight:260,overflowY:"auto",fontFamily:"'Segoe UI',system-ui,sans-serif"}} dangerouslySetInnerHTML={{__html: mdBoldToHtml(output)}}/>
+          ) : (
+            <div style={{flex:1,border:"1.5px solid #e2e8f0",borderRadius:8,padding:14,fontSize:12,color:"#94a3b8",background:"#f8fafc",minHeight:260,display:"flex",alignItems:"center",justifyContent:"center"}}>Generate an assignment to see output here…</div>
+          )}
         </div>
       </div>
     </div>
@@ -1055,7 +1231,7 @@ function StudentsList({students,showAdd,setShowAdd,newS,setNewS,addStudent,openP
 }
 
 /* ============ STUDENT PROFILE ============ */
-function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile}){
+function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,showToast}){
   const paFiltered = useMemo(()=>ALL_WS.filter(ws=>{
     if(paSubj!=="All"&&ws.subject!==paSubj)return false;
     if(paSrch&&!ws.title.toLowerCase().includes(paSrch.toLowerCase()))return false;
@@ -1098,7 +1274,7 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 
       {/* TABS */}
       <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:"2px solid #e2e8f0",flexWrap:"wrap"}}>
-        {[{id:"history",icon:"📋",label:"Assignment History"},{id:"diagnostics",icon:"🔬",label:"Diagnostics"},{id:"preassign",icon:"✅",label:"Pre-Assign"},{id:"scores",icon:"📊",label:"WellEd Scores"}].map(pt=>(
+        {[{id:"history",icon:"📋",label:"Assignment History"},{id:"diagnostics",icon:"🔬",label:"Diagnostics"},{id:"preassign",icon:"✅",label:"Pre-Assign"},{id:"scores",icon:"📊",label:"Score History"}].map(pt=>(
           <button key={pt.id} onClick={()=>setPtab(pt.id)} style={{border:"none",background:"none",cursor:"pointer",padding:"10px 18px",fontSize:13,fontWeight:ptab===pt.id?700:500,color:ptab===pt.id?B2:"#64748b",borderBottom:ptab===pt.id?`3px solid ${B2}`:"3px solid transparent",marginBottom:-2,display:"flex",alignItems:"center",gap:6}}>
             {pt.icon} {pt.label}
           </button>
@@ -1131,7 +1307,10 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
                     ))}
                   </div>
                   {(asg.welledDomain||[]).length>0&&<div style={{marginTop:8,padding:8,background:"#f0fdf4",borderRadius:6}}>
-                    <div style={{fontSize:10,fontWeight:800,color:"#065f46",marginBottom:4}}>WELLED DOMAIN ASSIGNMENTS</div>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                      <div style={{fontSize:10,fontWeight:800,color:"#065f46"}}>WELLED DOMAIN ASSIGNMENTS</div>
+                      <button onClick={()=>showToast&&showToast("✓ Saved to Score History")} style={{...mkBtn("#16a34a","#fff"),padding:"3px 10px",fontSize:10}}>💾 Save to Score History</button>
+                    </div>
                     {asg.welledDomain.map((i,idx)=>{
                       const wMax = i.subject==="Math"?22:27;
                       return(
@@ -1150,7 +1329,10 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
                     </div>
                   </div>}
                   {(asg.practiceExams||[]).length>0&&<div style={{marginTop:8,padding:8,background:"#eff6ff",borderRadius:6}}>
-                    <div style={{fontSize:10,fontWeight:800,color:"#1e40af",marginBottom:4}}>PRACTICE EXAMS</div>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                      <div style={{fontSize:10,fontWeight:800,color:"#1e40af"}}>PRACTICE EXAMS</div>
+                      <button onClick={()=>showToast&&showToast("✓ Saved to Score History")} style={{...mkBtn("#1e40af","#fff"),padding:"3px 10px",fontSize:10}}>💾 Save to Score History</button>
+                    </div>
                     {asg.practiceExams.map((ex,idx)=>{
                       const isFull = ex.type!=="section";
                       const rw = ex.rwScore||"", math = ex.mathScore||"";
@@ -1297,76 +1479,9 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
         </div>
       )}
 
-      {/* SCORES */}
+      {/* SCORE HISTORY (aggregated from all sources) */}
       {ptab==="scores"&&(
-        <div style={{display:"grid",gridTemplateColumns:"310px 1fr",gap:16}}>
-          <div style={{...CARD}}>
-            <div style={{fontSize:14,fontWeight:800,color:B2,marginBottom:14}}>Add Score</div>
-            <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>DATE</div><input type="date" value={sfm.date} onChange={e=>setSfm(prev=>({...prev,date:e.target.value}))} style={INP}/></div>
-              <div>
-                <div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>TEST / SECTION</div>
-                <select value={sfm.testType} onChange={e=>setSfm(prev=>({...prev,testType:e.target.value}))} style={INP}>
-                  <option value="">Select test type…</option>
-                  <optgroup label="Reading & Writing">
-                    <option>R&amp;W — Information & Ideas</option>
-                    <option>R&amp;W — Craft & Structure</option>
-                    <option>R&amp;W — Expression of Ideas</option>
-                    <option>R&amp;W — Standard English Conventions</option>
-                    <option>R&amp;W — Full Section</option>
-                  </optgroup>
-                  <optgroup label="Math">
-                    <option>Math — Algebra</option>
-                    <option>Math — Advanced Math</option>
-                    <option>Math — Problem-Solving & Data Analysis</option>
-                    <option>Math — Geometry & Trigonometry</option>
-                    <option>Math — Full Section</option>
-                  </optgroup>
-                  <optgroup label="Full Practice Tests">
-                    <option>WellEd Full Practice Test</option>
-                    <option>BlueBook Full Practice Test</option>
-                    <option>Official SAT / PSAT</option>
-                  </optgroup>
-                  <option value="Other">Other (see notes)</option>
-                </select>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>SCORE</div><input type="number" value={sfm.score} onChange={e=>setSfm(prev=>({...prev,score:e.target.value}))} placeholder="e.g. 650" style={INP}/></div>
-                <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>MAX SCORE</div><input type="number" value={sfm.maxScore} onChange={e=>setSfm(prev=>({...prev,maxScore:e.target.value}))} placeholder="e.g. 800" style={INP}/></div>
-              </div>
-              <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>NOTES</div><input value={sfm.notes} onChange={e=>setSfm(prev=>({...prev,notes:e.target.value}))} placeholder="Optional notes…" style={INP}/></div>
-              <button onClick={addScore} style={{...mkBtn(B2,"#fff"),padding:10,fontSize:13}}>+ Add Score</button>
-            </div>
-          </div>
-          <div style={{...CARD}}>
-            <div style={{fontSize:14,fontWeight:800,color:B2,marginBottom:14}}>Score History</div>
-            {(!p.scores||p.scores.length===0)?(
-              <div style={{color:"#94a3b8",textAlign:"center",paddingTop:30,fontSize:13}}>No scores yet.</div>
-            ):(
-              <div style={{overflowX:"auto"}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr style={{background:"#f1f5f9"}}>{["Date","Test / Section","Score","Max","%","Notes",""].map(h=><th key={h} style={{padding:"7px 11px",textAlign:"left",fontSize:10,color:"#64748b",fontWeight:700}}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {[...p.scores].sort((a,b)=>b.date.localeCompare(a.date)).map(sc=>{
-                      const pct=sc.maxScore?Math.round((Number(sc.score)/Number(sc.maxScore))*100):null;
-                      return(
-                        <tr key={sc.id} style={{borderBottom:"1px solid #f1f5f9"}}>
-                          <td style={{padding:"8px 11px",color:"#475569"}}>{sc.date}</td>
-                          <td style={{padding:"8px 11px",fontWeight:700,color:B2}}>{sc.testType}</td>
-                          <td style={{padding:"8px 11px",fontWeight:800,fontSize:14}}>{sc.score}</td>
-                          <td style={{padding:"8px 11px",color:"#94a3b8"}}>{sc.maxScore||"—"}</td>
-                          <td style={{padding:"8px 11px"}}>{pct!==null&&<span style={mkPill(pct>=75?"#f0fdf4":pct>=60?"#fffbeb":"#fef2f2",pct>=75?"#15803d":pct>=60?"#92400e":"#dc2626")}>{pct}%</span>}</td>
-                          <td style={{padding:"8px 11px",color:"#94a3b8",fontSize:11}}>{sc.notes||"—"}</td>
-                          <td style={{padding:"8px 11px"}}><button onClick={()=>delScore(sc.id)} style={{...mkBtn("#fee2e2","#dc2626"),padding:"2px 9px",fontSize:11}}>✕</button></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+        <ScoreHistoryPanel p={p} sfm={sfm} setSfm={setSfm} addScore={addScore} delScore={delScore}/>
       )}
     </div>
   );
@@ -1486,6 +1601,189 @@ function HeatMapTab({students,openProfile}){
   );
 }
 
+/* ============ SIMPLE SVG LINE CHART ============ */
+function LineChart({points, color="#004a79", max, height=80, width=260}){
+  // points: [{x:number, y:number, label?:string}]  x = 0..N-1 typically
+  if(!points || points.length===0) return <div style={{fontSize:10,color:"#94a3b8"}}>No data</div>;
+  const pad = 8;
+  const w = width - pad*2, h = height - pad*2;
+  const maxY = max!=null ? max : Math.max(...points.map(p=>p.y));
+  const minY = 0;
+  const range = maxY-minY || 1;
+  const stepX = points.length>1 ? w/(points.length-1) : 0;
+  const coords = points.map((p,i)=>({
+    cx: pad + (points.length>1?i*stepX:w/2),
+    cy: pad + h - ((p.y-minY)/range)*h,
+    raw: p
+  }));
+  const path = coords.map((c,i)=>`${i===0?"M":"L"}${c.cx.toFixed(1)},${c.cy.toFixed(1)}`).join(" ");
+  const area = `${path} L${coords[coords.length-1].cx.toFixed(1)},${(pad+h).toFixed(1)} L${coords[0].cx.toFixed(1)},${(pad+h).toFixed(1)} Z`;
+  return (
+    <svg width={width} height={height} style={{display:"block"}}>
+      <rect x={0} y={0} width={width} height={height} fill="#f8fafc" rx={6}/>
+      {[0.25,0.5,0.75].map(f=>(
+        <line key={f} x1={pad} y1={pad+h*f} x2={pad+w} y2={pad+h*f} stroke="#e2e8f0" strokeWidth={1} strokeDasharray="2,3"/>
+      ))}
+      <path d={area} fill={color} fillOpacity={0.12}/>
+      <path d={path} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"/>
+      {coords.map((c,i)=>(
+        <circle key={i} cx={c.cx} cy={c.cy} r={3} fill="#fff" stroke={color} strokeWidth={1.5}>
+          <title>{c.raw.label||""}: {c.raw.y}{max?`/${max}`:""}</title>
+        </circle>
+      ))}
+    </svg>
+  );
+}
+
+/* ============ SCORE HISTORY PANEL (inside StudentProfile) ============ */
+function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore}){
+  const pts = allScoreDataPoints(p);
+  // Group by subcategory. WellEd domain entries further split by difficulty.
+  const groups = useMemo(()=>{
+    const g = {};
+    pts.forEach(pt=>{
+      const key = pt.source==="history_welled" && pt.difficulty ? `${pt.subcategory} (${pt.difficulty})` : pt.subcategory;
+      if(!g[key]) g[key]={key,pts:[],source:pt.source,level:pt.level,difficulty:pt.difficulty};
+      g[key].pts.push(pt);
+    });
+    Object.values(g).forEach(grp=>grp.pts.sort((a,b)=>(a.date||"").localeCompare(b.date||"")));
+    return g;
+  },[pts]);
+
+  // Categorize groups for display
+  const sectionGroups = [], domainGroups = [], subGroups = [], fullPracticeGroups = [], otherGroups = [];
+  Object.values(groups).forEach(grp=>{
+    if(/Total SAT|R&W Section|Math Section|Full —|Section —|Practice|Official SAT|Full Practice/i.test(grp.key)) fullPracticeGroups.push(grp);
+    else if(grp.level==="sub") subGroups.push(grp);
+    else if(grp.level==="domain") domainGroups.push(grp);
+    else if(grp.source==="history_welled") domainGroups.push(grp);
+    else sectionGroups.push(grp);
+  });
+
+  const renderGroup = (grp)=>{
+    const last = grp.pts[grp.pts.length-1];
+    const first = grp.pts[0];
+    const lastPct = last.max?Math.round((last.score/last.max)*100):last.pct||null;
+    const firstPct = first.max?Math.round((first.score/first.max)*100):first.pct||null;
+    const delta = lastPct!=null&&firstPct!=null?lastPct-firstPct:null;
+    const pColor = lastPct===null?"#64748b":lastPct>=75?"#15803d":lastPct>=60?"#d97706":"#dc2626";
+    // Chart y-values: use pct if available, else raw
+    const chartPoints = grp.pts.map((pt,i)=>({x:i,y:pt.max?Math.round((pt.score/pt.max)*100):(pt.pct||pt.score||0),label:pt.date}));
+    return(
+      <div key={grp.key} style={{background:"#f8fafc",borderRadius:10,padding:12,border:"1.5px solid #e2e8f0"}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#475569",marginBottom:6,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{grp.key}</div>
+        <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}>
+          <div style={{fontSize:20,fontWeight:900,color:B2}}>{last.score}</div>
+          {last.max && <div style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>/{last.max}</div>}
+          {lastPct!=null && <div style={{fontSize:12,color:pColor,fontWeight:700,marginLeft:4}}>{lastPct}%</div>}
+          {delta!=null&&grp.pts.length>1&&<div style={{fontSize:10,color:delta>0?"#15803d":delta<0?"#dc2626":"#64748b",fontWeight:700,marginLeft:"auto"}}>{delta>0?"▲ +":delta<0?"▼ ":"→ "}{Math.abs(delta)}%</div>}
+        </div>
+        <LineChart points={chartPoints} color={B2} max={100} height={70} width={240}/>
+        <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>{grp.pts.length} point{grp.pts.length!==1?"s":""} · Latest {last.date}</div>
+      </div>
+    );
+  };
+
+  return(
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"310px 1fr",gap:16}}>
+        {/* Left: manual add */}
+        <div style={{...CARD}}>
+          <div style={{fontSize:14,fontWeight:800,color:B2,marginBottom:14}}>+ Add Score Manually</div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>DATE</div><input type="date" value={sfm.date} onChange={e=>setSfm(prev=>({...prev,date:e.target.value}))} style={INP}/></div>
+            <div>
+              <div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>TEST / SECTION</div>
+              <select value={sfm.testType} onChange={e=>setSfm(prev=>({...prev,testType:e.target.value}))} style={INP}>
+                <option value="">Select test type…</option>
+                <optgroup label="Full Practice Tests">
+                  <option>WellEd Full Practice Test</option>
+                  <option>BlueBook Full Practice Test</option>
+                  <option>Official SAT / PSAT</option>
+                </optgroup>
+                <optgroup label="Sections (out of 800)">
+                  <option>R&amp;W Section</option>
+                  <option>Math Section</option>
+                </optgroup>
+                <option value="Other">Other (see notes)</option>
+              </select>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>SCORE</div><input type="number" value={sfm.score} onChange={e=>setSfm(prev=>({...prev,score:e.target.value}))} placeholder="e.g. 1250" style={INP}/></div>
+              <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>MAX</div><input type="number" value={sfm.maxScore} onChange={e=>setSfm(prev=>({...prev,maxScore:e.target.value}))} placeholder="e.g. 1600" style={INP}/></div>
+            </div>
+            <div><div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>NOTES</div><input value={sfm.notes} onChange={e=>setSfm(prev=>({...prev,notes:e.target.value}))} placeholder="Optional notes…" style={INP}/></div>
+            <button onClick={addScore} style={{...mkBtn(B2,"#fff"),padding:10,fontSize:13}}>+ Add Score</button>
+            <div style={{fontSize:10,color:"#64748b",lineHeight:1.5,padding:8,background:"#f1f5f9",borderRadius:6}}>💡 Scores from Assignment History (practice exams + WellEd domain assignments) are automatically tracked here. Diagnostic section/total scores from uploaded PDFs also appear as baseline data points.</div>
+          </div>
+        </div>
+
+        {/* Right: aggregated view */}
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {pts.length===0 && <div style={{...CARD,padding:40,textAlign:"center",color:"#94a3b8"}}>
+            <div style={{fontSize:28,marginBottom:8}}>📊</div>
+            <div style={{fontSize:14,fontWeight:600}}>No scores recorded yet</div>
+            <div style={{fontSize:11,marginTop:4}}>Upload a diagnostic PDF, enter scores in Assignment History, or add a manual entry.</div>
+          </div>}
+
+          {fullPracticeGroups.length>0 && <div style={{...CARD}}>
+            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:10}}>🎯 Full Practice Tests & Section Scores</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
+              {fullPracticeGroups.map(renderGroup)}
+            </div>
+          </div>}
+
+          {domainGroups.length>0 && <div style={{...CARD}}>
+            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:10}}>📚 Domain Progression</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
+              {domainGroups.map(renderGroup)}
+            </div>
+          </div>}
+
+          {subGroups.length>0 && <div style={{...CARD}}>
+            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:10}}>🔬 Subskill Progression</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
+              {subGroups.map(renderGroup)}
+            </div>
+          </div>}
+
+          {sectionGroups.length>0 && <div style={{...CARD}}>
+            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:10}}>📝 Manual Entries</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:10}}>
+              {sectionGroups.map(renderGroup)}
+            </div>
+          </div>}
+
+          {(p.scores||[]).length>0 && <div style={{...CARD}}>
+            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:10}}>Manual Entry Table</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead><tr style={{background:"#f1f5f9"}}>{["Date","Test","Score","Max","%","Notes",""].map(h=><th key={h} style={{padding:"6px 9px",textAlign:"left",fontSize:9,color:"#64748b",fontWeight:700}}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {[...p.scores].sort((a,b)=>b.date.localeCompare(a.date)).map(sc=>{
+                    const pct=sc.maxScore?Math.round((Number(sc.score)/Number(sc.maxScore))*100):null;
+                    return(
+                      <tr key={sc.id} style={{borderBottom:"1px solid #f1f5f9"}}>
+                        <td style={{padding:"6px 9px",color:"#475569"}}>{sc.date}</td>
+                        <td style={{padding:"6px 9px",fontWeight:700,color:B2}}>{sc.testType}</td>
+                        <td style={{padding:"6px 9px",fontWeight:800}}>{sc.score}</td>
+                        <td style={{padding:"6px 9px",color:"#94a3b8"}}>{sc.maxScore||"—"}</td>
+                        <td style={{padding:"6px 9px"}}>{pct!==null&&<span style={mkPill(pct>=75?"#f0fdf4":pct>=60?"#fffbeb":"#fef2f2",pct>=75?"#15803d":pct>=60?"#92400e":"#dc2626")}>{pct}%</span>}</td>
+                        <td style={{padding:"6px 9px",color:"#94a3b8"}}>{sc.notes||"—"}</td>
+                        <td style={{padding:"6px 9px"}}><button onClick={()=>delScore(sc.id)} style={{...mkBtn("#fee2e2","#dc2626"),padding:"2px 8px",fontSize:10}}>✕</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============ SCORE DATA AGGREGATOR ============ */
 // Merges all score sources for a student into one flat list:
 //   1. Diagnostic section scores + total (first, at parsedAt date)
@@ -1504,7 +1802,11 @@ function allScoreDataPoints(student){
     if(diag.totalLower!=null) pts.push({date:dd,category:"Total SAT",subcategory:"Total SAT",score:Math.round((diag.totalLower+diag.totalUpper)/2),max:1600,source:"diagnostic",note:`Range: ${diag.totalLower}–${diag.totalUpper}`});
     // Domain-level diagnostic %s
     (diag.domains||[]).forEach(d=>{
-      pts.push({date:dd,category:`${d.subject} — ${d.name}`,subcategory:d.name,score:d.earn,max:d.poss,source:"diagnostic",pct:d.pct});
+      pts.push({date:dd,category:`${d.subject} — ${d.name}`,subcategory:`${d.subject} — ${d.name}`,score:d.earn,max:d.poss,source:"diagnostic",pct:d.pct,level:"domain"});
+    });
+    // Subdomain-level diagnostic %s
+    (diag.subs||[]).forEach(s=>{
+      pts.push({date:dd,category:`${s.subject} — ${s.domain} — ${s.name}`,subcategory:`${s.subject} — ${s.domain} — ${s.name}`,score:s.earn,max:s.poss,source:"diagnostic",pct:s.pct,level:"sub"});
     });
   }
   // 2. Manual scores
