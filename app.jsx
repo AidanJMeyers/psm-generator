@@ -858,12 +858,16 @@ function GeneratorTab(props){
           </div>
           <div>
             <div style={{fontSize:10,color:"#94a3b8",marginBottom:5}}>DIFFICULTY</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:3}}>
-              {["All","easy","medium","hard","comprehensive"].map(d=>(
-                <button key={d} onClick={()=>setDiffF(d)} style={{...mkBtn(diffF===d?(d==="All"?B2:DC[d]):"#f1f5f9",diffF===d?"#fff":"#475569"),padding:"3px 4px",fontSize:9}}>
-                  {d==="All"?"All":d==="comprehensive"?"Comp":d[0].toUpperCase()+d.slice(1,3)}
-                </button>
-              ))}
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {["All","easy","medium","hard","comprehensive"].map(d=>{
+                const label = d==="All"?"All Difficulties":d[0].toUpperCase()+d.slice(1);
+                const active = diffF===d;
+                return(
+                  <button key={d} onClick={()=>setDiffF(d)} style={{...mkBtn(active?(d==="All"?B2:DC[d]):"#f1f5f9",active?"#fff":"#475569"),padding:"6px 10px",fontSize:11,textAlign:"left",fontWeight:active?700:600}}>
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1072,6 +1076,39 @@ function StudentSummaryCard({student}){
     }
   }));
 
+  // Recent score breakdown — most recent data point per domain and per subdomain
+  const scorePts = useMemo(()=>allScoreDataPoints(student),[student]);
+  const latestDomainByKey = useMemo(()=>{
+    const m = {};
+    scorePts.forEach(pt=>{
+      if(pt.level==="domain" || pt.source==="history_welled"){
+        const key = pt.subcategory;
+        if(!m[key] || (pt.date||"")>(m[key].date||"")) m[key] = pt;
+      }
+    });
+    return m;
+  },[scorePts]);
+  const latestSubByKey = useMemo(()=>{
+    const m = {};
+    scorePts.forEach(pt=>{
+      if(pt.level==="sub"){
+        const key = pt.subcategory;
+        if(!m[key] || (pt.date||"")>(m[key].date||"")) m[key] = pt;
+      }
+    });
+    return m;
+  },[scorePts]);
+  const domainRows = Object.values(latestDomainByKey).sort((a,b)=>{
+    const ap = a.max?Math.round((a.score/a.max)*100):(a.pct||0);
+    const bp = b.max?Math.round((b.score/b.max)*100):(b.pct||0);
+    return ap-bp;
+  });
+  const subRows = Object.values(latestSubByKey).sort((a,b)=>{
+    const ap = a.max?Math.round((a.score/a.max)*100):(a.pct||0);
+    const bp = b.max?Math.round((b.score/b.max)*100):(b.pct||0);
+    return ap-bp;
+  }).slice(0,6);
+
   return(
     <div style={{...CARD,padding:14,background:"#fafbfc",border:"1.5px solid #dbeafe"}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
@@ -1121,6 +1158,47 @@ function StudentSummaryCard({student}){
           )}
         </div>
       </div>
+
+      {/* Recent score breakdown by domain/subdomain */}
+      {(domainRows.length>0 || subRows.length>0) && <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #cbd5e1"}}>
+        <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Recent Score Breakdown (latest per area)</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <div style={{fontSize:9,fontWeight:700,color:"#64748b",marginBottom:3}}>By Domain</div>
+            {domainRows.length===0 ? <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No domain scores yet</div> : (
+              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                {domainRows.slice(0,6).map(pt=>{
+                  const pct = pt.max?Math.round((pt.score/pt.max)*100):(pt.pct||0);
+                  const label = pt.subcategory.replace(/^(Math|Reading & Writing) — /,"").replace(/\s*\(easy\)/i," (E)").replace(/\s*\(medium\)/i," (M)").replace(/\s*\(hard\)/i," (H)").replace(/\s*\(comprehensive\)/i," (C)");
+                  return(
+                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                      <div style={{width:34,height:16,background:heatColorPct(pct),color:"#fff",borderRadius:3,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{pct}%</div>
+                      <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{label}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={{fontSize:9,fontWeight:700,color:"#64748b",marginBottom:3}}>Weakest Subskills</div>
+            {subRows.length===0 ? <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No subskill scores yet</div> : (
+              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                {subRows.map(pt=>{
+                  const pct = pt.max?Math.round((pt.score/pt.max)*100):(pt.pct||0);
+                  const name = pt.subcategory.split(" — ").pop();
+                  return(
+                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                      <div style={{width:34,height:16,background:heatColorPct(pct),color:"#fff",borderRadius:3,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{pct}%</div>
+                      <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{name}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>}
 
       {/* Last PSM set */}
       {lastAsg && <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #cbd5e1"}}>
