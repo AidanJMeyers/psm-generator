@@ -762,9 +762,13 @@ function AppInner({authUser, onSignOut}){
   const[addBB,setAddBB]=useState(false);
   const[bbType,setBbType]=useState("full");
   const[bbCnt,setBbCnt]=useState(1);
+  const[bbMode,setBbMode]=useState("auto"); // "auto" | "specific"
+  const[bbPicks,setBbPicks]=useState([]);    // specific BlueBook test numbers
   const[addWE,setAddWE]=useState(false);
   const[weType,setWeType]=useState("full");
   const[weCnt,setWeCnt]=useState(1);
+  const[weMode,setWeMode]=useState("auto");
+  const[wePicks,setWePicks]=useState([]);
   // Output
   const[output,setOutput]=useState("");
   const[copied,setCopied]=useState(false);
@@ -785,8 +789,8 @@ function AppInner({authUser, onSignOut}){
   const[paSrch,setPaSrch]=useState("");
   const[paDate,setPaDate]=useState(todayStr());
   const[paWeChk,setPaWeChk]=useState({});   // pre-assign WellEd domain checks
-  const[paBBNums,setPaBBNums]=useState("");  // comma-separated BlueBook test numbers
-  const[paWENums,setPaWENums]=useState("");  // comma-separated WellEd test numbers
+  const[paBBPicks,setPaBBPicks]=useState([]); // pre-assign BlueBook test numbers
+  const[paWEPicks,setPaWEPicks]=useState([]); // pre-assign WellEd test numbers
   const[sfm,setSfm]=useState({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});
   const[toast,setToast]=useState("");
   const[parsing,setParsing]=useState(false);
@@ -884,11 +888,13 @@ function AppInner({authUser, onSignOut}){
   const totalQs = useMemo(()=>{
     let t = selWS.reduce((n,ws)=>n+(ws.qs||0),0);
     t += selWeDom.reduce((n,i)=>n+(i.qs||0),0);
-    // Practice exams
-    if(addBB){t += bbCnt * (bbType==="full" ? 98 : 49);}  // 54 R&W + 44 Math per full
-    if(addWE){t += weCnt * (weType==="full" ? 98 : 49);}
+    // Practice exams — count is picks.length in specific mode, bbCnt/weCnt in auto.
+    const bbN = addBB ? (bbMode==="specific" ? bbPicks.length : bbCnt) : 0;
+    const weN = addWE ? (weMode==="specific" ? wePicks.length : weCnt) : 0;
+    t += bbN * (bbType==="full" ? 98 : 49); // 54 R&W + 44 Math per full
+    t += weN * (weType==="full" ? 98 : 49);
     return t;
-  },[selWS,selWeDom,addBB,bbCnt,bbType,addWE,weCnt,weType]);
+  },[selWS,selWeDom,addBB,bbCnt,bbType,bbMode,bbPicks,addWE,weCnt,weType,weMode,wePicks]);
 
   // visibleStudents is the deep-filtered view used for all display. Raw `students`
   // still contains soft-deleted records so the Trash tab can show them and mutations
@@ -933,21 +939,23 @@ function AppInner({authUser, onSignOut}){
       selVocab.forEach(i=>lines.push(i.label));
     }
     // Practice Exams block
-    if(addBB||addWE){
+    // Resolve the actual test-number arrays for each platform up-front so the
+    // same numbers flow into both the text output AND the saved entry below.
+    const bbNumsOut = addBB
+      ? (bbMode==="specific" ? [...bbPicks].sort((a,b)=>a-b) : nextExamNumbers(curStudent,"BlueBook",bbCnt))
+      : [];
+    const weNumsOut = addWE
+      ? (weMode==="specific" ? [...wePicks].sort((a,b)=>a-b) : nextExamNumbers(curStudent,"WellEd",weCnt))
+      : [];
+    if(bbNumsOut.length || weNumsOut.length){
       lines.push("");
       lines.push("**Practice Exams:**");
-      if(addBB){
-        const bbNums = nextExamNumbers(curStudent,"BlueBook",bbCnt);
-        bbNums.forEach(n=>{
-          lines.push(`Please complete Practice Exam # ${n} on BlueBook (College Board) using the instructions for BlueBook (College Board) practice exams located in your Wise "Full Practice Exam Instructions" Module -  https://bluebook.app.collegeboard.org/.  Be sure to follow instructions regarding screenshots of missed questions!`);
-        });
-      }
-      if(addWE){
-        const weNums = nextExamNumbers(curStudent,"WellEd",weCnt);
-        weNums.forEach(n=>{
-          lines.push(`Please complete Practice Exam # ${n} on WellEd Labs using the instructions for WellEd Labs practice exams located in your Wise "Full Practice Exam Instructions" Module - https://ats.practicetest.io/sign-in.`);
-        });
-      }
+      bbNumsOut.forEach(n=>{
+        lines.push(`Please complete Practice Exam # ${n} on BlueBook (College Board) using the instructions for BlueBook (College Board) practice exams located in your Wise "Full Practice Exam Instructions" Module -  https://bluebook.app.collegeboard.org/.  Be sure to follow instructions regarding screenshots of missed questions!`);
+      });
+      weNumsOut.forEach(n=>{
+        lines.push(`Please complete Practice Exam # ${n} on WellEd Labs using the instructions for WellEd Labs practice exams located in your Wise "Full Practice Exam Instructions" Module - https://ats.practicetest.io/sign-in.`);
+      });
     }
 
     // Student Forms (flat list, STU_ prefix, .pdf suffix, URL appended)
@@ -974,8 +982,6 @@ function AppInner({authUser, onSignOut}){
     if(curStudent){
       const weEntries = selWeDom.map(i=>({kind:"welled_domain",subject:i.subject,domain:i.domain,difficulty:i.difficulty,label:i.label,qs:i.qs}));
       const vocabEntries = selVocab.map(i=>({kind:i.kind,name:i.name,variant:i.variant||null,label:i.label}));
-      const bbNums = addBB ? nextExamNumbers(curStudent,"BlueBook",bbCnt) : [];
-      const weNums = addWE ? nextExamNumbers(curStudent,"WellEd",weCnt) : [];
       const entry={
         id:uid(),
         date:todayStr(),
@@ -985,12 +991,12 @@ function AppInner({authUser, onSignOut}){
         welledDomain:weEntries,
         vocab:vocabEntries,
         practiceExams:[
-          ...(addBB?bbNums.map(n=>({platform:"BlueBook",type:bbType,number:n,examType})) :[]),
-          ...(addWE?weNums.map(n=>({platform:"WellEd",type:weType,number:n,examType})) :[]),
+          ...bbNumsOut.map(n=>({platform:"BlueBook",type:bbType,number:n,examType})),
+          ...weNumsOut.map(n=>({platform:"WellEd",type:weType,number:n,examType})),
         ],
         timeDrill,oneNote,
       };
-      if(selWS.length>0 || weEntries.length>0 || vocabEntries.length>0 || addBB || addWE){
+      if(selWS.length>0 || weEntries.length>0 || vocabEntries.length>0 || bbNumsOut.length>0 || weNumsOut.length>0){
         setStudents(prev=>prev.map(st=>st.id===curStudent.id?{...st,assignments:[...(st.assignments||[]),entry]}:st));
         showToast(`Saved to ${curStudent.name}'s profile`);
       }
@@ -1297,8 +1303,8 @@ function AppInner({authUser, onSignOut}){
   const savePreAssign=()=>{
     const ids=Object.keys(paChk).filter(k=>paChk[k]);
     const weIds=Object.keys(paWeChk).filter(k=>paWeChk[k]);
-    const bbArr=(paBBNums||"").split(/[,\s]+/).map(Number).filter(n=>n>0);
-    const weArr=(paWENums||"").split(/[,\s]+/).map(Number).filter(n=>n>0);
+    const bbArr=[...paBBPicks].sort((a,b)=>a-b);
+    const weArr=[...paWEPicks].sort((a,b)=>a-b);
     if(!ids.length&&!weIds.length&&!bbArr.length&&!weArr.length)return;
     const sheets=ALL_WS.filter(ws=>ids.includes(ws.id));
     const weEntries=WE_DOMAIN_ITEMS.filter(i=>weIds.includes(i.id)).map(i=>({kind:"welled_domain",subject:i.subject,domain:i.domain,difficulty:i.difficulty,label:i.label,qs:i.qs}));
@@ -1309,7 +1315,7 @@ function AppInner({authUser, onSignOut}){
     const entry={id:uid(),date:paDate||todayStr(),preAssigned:true,examType,worksheets:sheets.map(ws=>({id:ws.id,title:ws.title,subject:ws.subject,domain:ws.domain,subdomain:ws.subdomain,difficulty:ws.difficulty,qs:ws.qs})),welledDomain:weEntries,vocab:[],practiceExams,timeDrill:false,oneNote:false};
     const upd=students.map(st=>st.id===profile.id?{...st,assignments:[...(st.assignments||[]),entry]}:st);
     const totalItems=ids.length+weIds.length+bbArr.length+weArr.length;
-    setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setPaChk({});setPaWeChk({});setPaBBNums("");setPaWENums("");showToast(`${totalItems} item(s) pre-assigned`);
+    setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setPaChk({});setPaWeChk({});setPaBBPicks([]);setPaWEPicks([]);showToast(`${totalItems} item(s) pre-assigned`);
   };
   const addScore=()=>{if(!sfm.testType||!sfm.score)return;const entry={...sfm,id:uid()};const upd=students.map(st=>st.id===profile.id?{...st,scores:[...(st.scores||[]),entry]}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});showToast("Score recorded");};
   // Soft-delete — items stay in the array with deleted:true and deletedAt,
@@ -1877,8 +1883,8 @@ function AppInner({authUser, onSignOut}){
           chk,setChk,evenOdd,setEvenOdd,weChk,setWeChk,vocabChk,setVocabChk,
           timeDrill,setTimeDrill,timeLims,setTimeLims,oneNote,setOneNote,
           weDomEn,setWeDomEn,vocabEn,setVocabEn,
-          addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,
-          addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,
+          addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,bbMode,setBbMode,bbPicks,setBbPicks,
+          addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,weMode,setWeMode,wePicks,setWePicks,
           selWS,selWeDom,selVocab,totalQs,examType,
           generate,output,copyOut,copyRichOut,downloadPdf,copied,
           lastAssignedDate,
@@ -1889,7 +1895,7 @@ function AppInner({authUser, onSignOut}){
 
         {tab==="students"&&profile&&p&&<StudentProfile {...{p,setProfile,ptab,setPtab,
           paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,
-          paDate,setPaDate,paWeChk,setPaWeChk,paBBNums,setPaBBNums,paWENums,setPaWENums,
+          paDate,setPaDate,paWeChk,setPaWeChk,paBBPicks,setPaBBPicks,paWEPicks,setPaWEPicks,
           sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,
           addWelledLog,delWelledLog,
           handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,showToast,
@@ -1913,6 +1919,51 @@ function AppInner({authUser, onSignOut}){
   );
 }
 
+/* ============ EXAM CHIP PICKER ============ */
+// Renders a grid of clickable test-number chips. Used tests show a ✓ mark but
+// stay clickable so tutors can assign re-dos. Shared by the Generator tab's
+// Practice Exams card and the Student Profile pre-assign panel.
+function ExamChipPicker({all, used, picks, setPicks, accent, accentSoft, accentBorder}){
+  const pickSet = new Set(picks);
+  const toggle = (n)=>{
+    if(pickSet.has(n)) setPicks(picks.filter(x=>x!==n));
+    else setPicks([...picks, n].sort((a,b)=>a-b));
+  };
+  return (
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+        {all.map(n=>{
+          const isPicked = pickSet.has(n);
+          const isUsed = used.has(n);
+          return (
+            <button
+              key={n}
+              type="button"
+              onClick={()=>toggle(n)}
+              title={isUsed ? `Test ${n} — already assigned` : `Test ${n}`}
+              style={{
+                minWidth: 28, height: 24, padding: "0 6px", fontSize: 10, fontWeight: 700,
+                fontFamily: "'IBM Plex Mono',monospace",
+                borderRadius: 3, cursor: "pointer",
+                background: isPicked ? accent : (isUsed ? "#fef3c7" : "#FAF7F2"),
+                color: isPicked ? "#FAF7F2" : (isUsed ? "#a16207" : "#66708A"),
+                border: `1px solid ${isPicked ? accentBorder : (isUsed ? "#fde68a" : "rgba(15,26,46,.12)")}`,
+                transition: "background .15s, color .15s, border-color .15s",
+              }}
+            >
+              {n}{isUsed && !isPicked ? " ✓" : ""}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{fontSize:9,color:"#66708A",marginTop:5,fontFamily:"'IBM Plex Mono',monospace",letterSpacing:.6}}>
+        {picks.length.toString().padStart(2,"0")} SELECTED
+        {picks.length>0 ? ` · ${picks.join(", ")}` : ""}
+      </div>
+    </div>
+  );
+}
+
 /* ============ GENERATOR TAB ============ */
 function GeneratorTab(props){
   const {curStudent,selSt,setSelSt,students,openProfile,
@@ -1921,8 +1972,8 @@ function GeneratorTab(props){
     chk,setChk,evenOdd,setEvenOdd,weChk,setWeChk,vocabChk,setVocabChk,
     timeDrill,setTimeDrill,timeLims,setTimeLims,oneNote,setOneNote,
     weDomEn,setWeDomEn,vocabEn,setVocabEn,
-    addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,
-    addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,
+    addBB,setAddBB,bbType,setBbType,bbCnt,setBbCnt,bbMode,setBbMode,bbPicks,setBbPicks,
+    addWE,setAddWE,weType,setWeType,weCnt,setWeCnt,weMode,setWeMode,wePicks,setWePicks,
     selWS,selWeDom,selVocab,totalQs,examType,
     generate,output,copyOut,copyRichOut,downloadPdf,copied,lastAssignedDate,
     customAssignments,setCustomAssignments,showToast} = props;
@@ -1990,9 +2041,20 @@ function GeneratorTab(props){
     setTimeDrill(!!lastSession.timeDrill);
     setOneNote(!!lastSession.oneNote);
     setAddBB(bb.length > 0);
-    if(bb.length > 0){ setBbType(bb[0].type || "full"); setBbCnt(bb.length); }
+    if(bb.length > 0){
+      setBbType(bb[0].type || "full");
+      setBbCnt(bb.length);
+      // Copy the exact test numbers so the tutor sees last session's picks.
+      setBbMode("specific");
+      setBbPicks(bb.map(x=>x.number).filter(n=>typeof n==="number").sort((a,b)=>a-b));
+    }
     setAddWE(we.length > 0);
-    if(we.length > 0){ setWeType(we[0].type || "full"); setWeCnt(we.length); }
+    if(we.length > 0){
+      setWeType(we[0].type || "full");
+      setWeCnt(we.length);
+      setWeMode("specific");
+      setWePicks(we.map(x=>x.number).filter(n=>typeof n==="number").sort((a,b)=>a-b));
+    }
 
     showToast(`Copied ${curStudent.name}'s last session (${lastSession.date})`);
   };
@@ -2172,41 +2234,111 @@ function GeneratorTab(props){
         </div>
 
         {/* PRACTICE EXAMS */}
-        <div style={{...CARD}}>
-          <SH>Practice Exams</SH>
-          <div style={{padding:12,background:"#F3EEE4",borderRadius:4,marginBottom:10,border:"1px solid rgba(15,26,46,.06)"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:addBB?10:0}}>
-              <span style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,fontWeight:600,color:"#003258",letterSpacing:-.1}}>BlueBook</span>
-              <input type="checkbox" checked={addBB} onChange={e=>setAddBB(e.target.checked)} style={{cursor:"pointer",accentColor:B2}}/>
-            </div>
-            {addBB&&<div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 54px",gap:6,marginBottom:6}}>
-                <select value={bbType} onChange={e=>setBbType(e.target.value)} style={{...INP,fontSize:11}}>
-                  <option value="full">Full Test</option>
-                  <option value="section">Section</option>
-                </select>
-                <input type="number" min={1} max={10} value={bbCnt} onChange={e=>setBbCnt(Number(e.target.value))} style={{...INP,fontSize:12,textAlign:"center"}}/>
+        {(()=>{
+          // Used test numbers per platform for the current student — drives the "already assigned" chip styling.
+          const bbUsed = new Set();
+          const weUsed = new Set();
+          if(curStudent){
+            (curStudent.assignments||[]).forEach(a=>(a.practiceExams||[]).forEach(ex=>{
+              if(ex.platform==="BlueBook" && typeof ex.number==="number") bbUsed.add(ex.number);
+              if(ex.platform==="WellEd"  && typeof ex.number==="number") weUsed.add(ex.number);
+            }));
+          }
+          // Little shared mode-toggle button factory.
+          const modeBtn = (active, label, onClick, color)=>(
+            <button type="button" onClick={onClick} style={{
+              flex:1, padding:"5px 8px", fontSize:10, fontWeight:600, letterSpacing:.4, textTransform:"uppercase",
+              fontFamily:"'IBM Plex Sans',system-ui,sans-serif",
+              background: active ? color : "transparent",
+              color: active ? "#FAF7F2" : "#66708A",
+              border: `1px solid ${active ? color : "rgba(15,26,46,.18)"}`,
+              borderRadius: 3, cursor:"pointer", transition:"background .15s, color .15s",
+            }}>{label}</button>
+          );
+          return (
+            <div style={{...CARD}}>
+              <SH>Practice Exams</SH>
+
+              {/* BlueBook */}
+              <div style={{padding:12,background:"#F3EEE4",borderRadius:4,marginBottom:10,border:"1px solid rgba(15,26,46,.06)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:addBB?10:0}}>
+                  <span style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,fontWeight:600,color:"#003258",letterSpacing:-.1}}>BlueBook</span>
+                  <input type="checkbox" checked={addBB} onChange={e=>setAddBB(e.target.checked)} style={{cursor:"pointer",accentColor:B2}}/>
+                </div>
+                {addBB&&<div>
+                  <select value={bbType} onChange={e=>setBbType(e.target.value)} style={{...INP,fontSize:11,marginBottom:6}}>
+                    <option value="full">Full Test</option>
+                    <option value="section">Section</option>
+                  </select>
+                  <div style={{display:"flex",gap:4,marginBottom:8}}>
+                    {modeBtn(bbMode==="auto","Auto",()=>setBbMode("auto"),"#003258")}
+                    {modeBtn(bbMode==="specific","Pick specific",()=>setBbMode("specific"),"#003258")}
+                  </div>
+                  {bbMode==="auto" ? (
+                    <div>
+                      <input type="number" min={1} max={BLUEBOOK_PRACTICE_TESTS.length} value={bbCnt} onChange={e=>setBbCnt(Number(e.target.value))} style={{...INP,fontSize:12,textAlign:"center"}}/>
+                      {bbUsed.size>0 && (
+                        <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:6}}>
+                          {BLUEBOOK_PRACTICE_TESTS.map(n=>(
+                            <span key={n} style={{fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:700,background:bbUsed.has(n)?"#fef3c7":"#f1f5f9",color:bbUsed.has(n)?"#a16207":"#94a3b8",border:bbUsed.has(n)?"1px solid #fde68a":"1px solid #e2e8f0"}}>{n}{bbUsed.has(n)?" ✓":""}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <ExamChipPicker
+                      all={BLUEBOOK_PRACTICE_TESTS}
+                      used={bbUsed}
+                      picks={bbPicks}
+                      setPicks={setBbPicks}
+                      accent="#003258"
+                      accentBorder="#003258"
+                    />
+                  )}
+                </div>}
               </div>
-              {curStudent&&(()=>{const used=new Set();(curStudent.assignments||[]).forEach(a=>(a.practiceExams||[]).forEach(ex=>{if(ex.platform==="BlueBook")used.add(ex.number);}));return used.size>0?<div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:4}}>{BLUEBOOK_PRACTICE_TESTS.map(n=><span key={n} style={{fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:700,background:used.has(n)?"#fef3c7":"#f1f5f9",color:used.has(n)?"#a16207":"#94a3b8",border:used.has(n)?"1px solid #fde68a":"1px solid #e2e8f0"}}>{n}{used.has(n)?" ✓":""}</span>)}</div>:null;})()}
-            </div>}
-          </div>
-          <div style={{padding:12,background:"#F3EEE4",borderRadius:4,border:"1px solid rgba(15,26,46,.06)"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:addWE?10:0}}>
-              <span style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,fontWeight:600,color:"#6E3F12",letterSpacing:-.1}}>WellEd Labs</span>
-              <input type="checkbox" checked={addWE} onChange={e=>setAddWE(e.target.checked)} style={{cursor:"pointer",accentColor:"#9A5B1F"}}/>
-            </div>
-            {addWE&&<div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 54px",gap:6,marginBottom:6}}>
-                <select value={weType} onChange={e=>setWeType(e.target.value)} style={{...INP,fontSize:11}}>
-                  <option value="full">Full Test</option>
-                  <option value="section">Section</option>
-                </select>
-                <input type="number" min={1} max={10} value={weCnt} onChange={e=>setWeCnt(Number(e.target.value))} style={{...INP,fontSize:12,textAlign:"center"}}/>
+
+              {/* WellEd Labs */}
+              <div style={{padding:12,background:"#F3EEE4",borderRadius:4,border:"1px solid rgba(15,26,46,.06)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:addWE?10:0}}>
+                  <span style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,fontWeight:600,color:"#6E3F12",letterSpacing:-.1}}>WellEd Labs</span>
+                  <input type="checkbox" checked={addWE} onChange={e=>setAddWE(e.target.checked)} style={{cursor:"pointer",accentColor:"#9A5B1F"}}/>
+                </div>
+                {addWE&&<div>
+                  <select value={weType} onChange={e=>setWeType(e.target.value)} style={{...INP,fontSize:11,marginBottom:6}}>
+                    <option value="full">Full Test</option>
+                    <option value="section">Section</option>
+                  </select>
+                  <div style={{display:"flex",gap:4,marginBottom:8}}>
+                    {modeBtn(weMode==="auto","Auto",()=>setWeMode("auto"),"#9A5B1F")}
+                    {modeBtn(weMode==="specific","Pick specific",()=>setWeMode("specific"),"#9A5B1F")}
+                  </div>
+                  {weMode==="auto" ? (
+                    <div>
+                      <input type="number" min={1} max={WELLED_PRACTICE_TESTS.length} value={weCnt} onChange={e=>setWeCnt(Number(e.target.value))} style={{...INP,fontSize:12,textAlign:"center"}}/>
+                      {weUsed.size>0 && (
+                        <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:6}}>
+                          {WELLED_PRACTICE_TESTS.slice(0,20).map(n=>(
+                            <span key={n} style={{fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:700,background:weUsed.has(n)?"#dcfce7":"#f1f5f9",color:weUsed.has(n)?"#065f46":"#94a3b8",border:weUsed.has(n)?"1px solid #86efac":"1px solid #e2e8f0"}}>{n}{weUsed.has(n)?" ✓":""}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <ExamChipPicker
+                      all={WELLED_PRACTICE_TESTS}
+                      used={weUsed}
+                      picks={wePicks}
+                      setPicks={setWePicks}
+                      accent="#9A5B1F"
+                      accentBorder="#9A5B1F"
+                    />
+                  )}
+                </div>}
               </div>
-              {curStudent&&(()=>{const used=new Set();(curStudent.assignments||[]).forEach(a=>(a.practiceExams||[]).forEach(ex=>{if(ex.platform==="WellEd")used.add(ex.number);}));return used.size>0?<div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:4}}>{WELLED_PRACTICE_TESTS.slice(0,20).map(n=><span key={n} style={{fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:700,background:used.has(n)?"#dcfce7":"#f1f5f9",color:used.has(n)?"#065f46":"#94a3b8",border:used.has(n)?"1px solid #86efac":"1px solid #e2e8f0"}}>{n}{used.has(n)?" ✓":""}</span>)}</div>:null;})()}
-            </div>}
-          </div>
-        </div>
+            </div>
+          );
+        })()}
 
         {/* LIVE COUNTERS */}
         <div style={{background:totalSelected>0?"#0F1A2E":"#F3EEE4",borderRadius:6,padding:"14px 16px",fontSize:12,color:totalSelected>0?"#FAF7F2":"#66708A",fontWeight:500,boxShadow:totalSelected>0?"0 4px 14px -6px rgba(15,26,46,.3)":"0 0 0 1px rgba(15,26,46,.08)",transition:"background .3s, color .3s"}}>
@@ -2569,7 +2701,7 @@ function StudentsList({students,showAdd,setShowAdd,newS,setNewS,addStudent,openP
 }
 
 /* ============ STUDENT PROFILE ============ */
-function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,paDate,setPaDate,paWeChk,setPaWeChk,paBBNums,setPaBBNums,paWENums,setPaWENums,sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,addWelledLog,delWelledLog,handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,showToast,students,setStudents,examType,handleWelledUpload,welledInputRef,customAssignments,setCustomAssignments}){
+function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,paDate,setPaDate,paWeChk,setPaWeChk,paBBPicks,setPaBBPicks,paWEPicks,setPaWEPicks,sfm,setSfm,addScore,delScore,delAsg,setExamScore,setWelledDomainScore,addWelledLog,delWelledLog,handleDiagUpload,clearDiagnostics,diagInputRef,diagProfile,showToast,students,setStudents,examType,handleWelledUpload,welledInputRef,customAssignments,setCustomAssignments}){
   const[editDateId,setEditDateId]=useState(null);
   const[editDateVal,setEditDateVal]=useState("");
   const paFiltered = useMemo(()=>ALL_WS.filter(ws=>{
@@ -2903,25 +3035,47 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
           </div>
 
           {/* Practice Exams Pre-Assign */}
-          <div style={{...CARD,marginTop:16,padding:18}}>
-            <SH>Practice Exams</SH>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-              <div>
-                <label style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",display:"block",marginBottom:5,letterSpacing:1.2,textTransform:"uppercase"}}>BlueBook Test Numbers</label>
-                <input placeholder="e.g. 1, 2, 3" value={paBBNums} onChange={e=>setPaBBNums(e.target.value)} style={{...INP,fontSize:11}}/>
-                <div style={{fontSize:9,color:"#66708A",marginTop:4,fontStyle:"italic"}}>Comma-separated numbers</div>
+          {(()=>{
+            const bbUsed = new Set();
+            const weUsed = new Set();
+            (p.assignments||[]).forEach(a=>(a.practiceExams||[]).forEach(ex=>{
+              if(ex.platform==="BlueBook" && typeof ex.number==="number") bbUsed.add(ex.number);
+              if(ex.platform==="WellEd"  && typeof ex.number==="number") weUsed.add(ex.number);
+            }));
+            return (
+              <div style={{...CARD,marginTop:16,padding:18}}>
+                <SH>Practice Exams</SH>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                  <div>
+                    <label style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",display:"block",marginBottom:8,letterSpacing:1.2,textTransform:"uppercase"}}>BlueBook Tests</label>
+                    <ExamChipPicker
+                      all={BLUEBOOK_PRACTICE_TESTS}
+                      used={bbUsed}
+                      picks={paBBPicks}
+                      setPicks={setPaBBPicks}
+                      accent="#003258"
+                      accentBorder="#003258"
+                    />
+                  </div>
+                  <div>
+                    <label style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",display:"block",marginBottom:8,letterSpacing:1.2,textTransform:"uppercase"}}>WellEd Tests</label>
+                    <ExamChipPicker
+                      all={WELLED_PRACTICE_TESTS}
+                      used={weUsed}
+                      picks={paWEPicks}
+                      setPicks={setPaWEPicks}
+                      accent="#9A5B1F"
+                      accentBorder="#9A5B1F"
+                    />
+                  </div>
+                </div>
               </div>
-              <div>
-                <label style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",display:"block",marginBottom:5,letterSpacing:1.2,textTransform:"uppercase"}}>WellEd Test Numbers</label>
-                <input placeholder="e.g. 1, 2, 3" value={paWENums} onChange={e=>setPaWENums(e.target.value)} style={{...INP,fontSize:11}}/>
-                <div style={{fontSize:9,color:"#66708A",marginTop:4,fontStyle:"italic"}}>Comma-separated numbers</div>
-              </div>
-            </div>
-          </div>
+            );
+          })()}
 
           <div style={{marginTop:16,display:"flex",gap:8}}>
-            <button onClick={savePreAssign} style={{...mkBtn(B2,"#FAF7F2"),padding:"10px 22px",fontSize:12,fontWeight:600,letterSpacing:.3,textTransform:"uppercase",boxShadow:"0 4px 14px -4px rgba(0,50,88,.4)"}}>Save Pre-Assigned · {Object.values(paChk).filter(Boolean).length + Object.values(paWeChk).filter(Boolean).length + ((paBBNums||"").split(/[,\s]+/).filter(s=>s&&Number(s)>0).length) + ((paWENums||"").split(/[,\s]+/).filter(s=>s&&Number(s)>0).length)} items</button>
-            <button onClick={()=>{setPaChk({});setPaWeChk({});setPaBBNums("");setPaWENums("");}} style={{...mkBtn("transparent","#66708A"),border:"1px solid rgba(15,26,46,.18)",padding:"10px 20px",fontSize:11}}>Clear</button>
+            <button onClick={savePreAssign} style={{...mkBtn(B2,"#FAF7F2"),padding:"10px 22px",fontSize:12,fontWeight:600,letterSpacing:.3,textTransform:"uppercase",boxShadow:"0 4px 14px -4px rgba(0,50,88,.4)"}}>Save Pre-Assigned · {Object.values(paChk).filter(Boolean).length + Object.values(paWeChk).filter(Boolean).length + paBBPicks.length + paWEPicks.length} items</button>
+            <button onClick={()=>{setPaChk({});setPaWeChk({});setPaBBPicks([]);setPaWEPicks([]);}} style={{...mkBtn("transparent","#66708A"),border:"1px solid rgba(15,26,46,.18)",padding:"10px 20px",fontSize:11}}>Clear</button>
           </div>
         </div>
       )}
