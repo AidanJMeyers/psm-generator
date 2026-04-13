@@ -2678,8 +2678,24 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
     if(!vals.length) return null;
     return Math.round(vals.reduce((a,b)=>a+b,0)/vals.length);
   };
-  const pctColor = (v)=> v==null?"#64748b":v>=80?"#15803d":v>=65?"#d97706":"#dc2626";
-  const pctBg = (v)=> v==null?"#f1f5f9":v>=80?"#dcfce7":v>=65?"#fef3c7":"#fee2e2";
+  /* Editorial threshold palette — sage / mustard / oxblood with matching tints */
+  const pctColor = (v)=> v==null?"#66708A":v>=80?"#4C7A4C":v>=65?"#A9761B":"#8C2E2E";
+  const pctBg = (v)=> v==null?"#F3EEE4":v>=80?"rgba(76,122,76,.1)":v>=65?"rgba(169,118,27,.12)":"rgba(140,46,46,.1)";
+
+  /* Inline progress bar — visual percentage representation for data-dense rows */
+  const PctBar = ({value, width=72, inline=false})=>{
+    if(value==null) return <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#66708A"}}>—</span>;
+    const c = pctColor(value);
+    const clamped = Math.max(0, Math.min(100, value));
+    return (
+      <span style={{display:"inline-flex",alignItems:"center",gap:8,verticalAlign:"middle"}}>
+        <span style={{display:"inline-block",width,height:5,background:"rgba(15,26,46,.08)",borderRadius:1,overflow:"hidden",position:"relative",flexShrink:0}}>
+          <span style={{position:"absolute",left:0,top:0,bottom:0,width:clamped+"%",background:c,borderRadius:1}}/>
+        </span>
+        <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:inline?10:11,fontWeight:600,color:c,letterSpacing:.2,minWidth:inline?24:30,textAlign:"right"}}>{value}%</span>
+      </span>
+    );
+  };
 
   // Small sparkline card (used for full practice & subskills)
   const miniCard = (key,title,ptsArr,accent)=>{
@@ -2691,24 +2707,26 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
     const hasDiag = ptsArr.some(p=>p.source==="diagnostic");
     const srcLabels = [...new Set(ptsArr.map(p=>({diagnostic:"Diagnostic",manual:"Manual",history_exam:"Practice",history_welled:"WellEd Asg",welled_log:"WellEd Log"}[p.source]||p.source)))];
     return(
-      <div key={key} style={{background:"#fff",borderRadius:10,padding:11,border:`1.5px solid ${accent}25`,borderLeft:`4px solid ${accent}`}}>
-        <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
-          <div style={{fontSize:11,fontWeight:800,color:"#334155",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}} title={title}>{title}</div>
-          {hasDiag&&<span style={{...mkPill("#fef3c7","#92400e"),fontSize:8,letterSpacing:0.3}}>DIAG</span>}
+      <div key={key} style={{background:"#fff",borderRadius:3,padding:14,boxShadow:"0 0 0 1px rgba(15,26,46,.08)",borderLeft:`3px solid ${accent}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+          <div style={{fontFamily:"'IBM Plex Sans',system-ui,sans-serif",fontSize:12,fontWeight:600,color:"#0F1A2E",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:-.1}} title={title}>{title}</div>
+          {hasDiag&&<span style={{...mkPill("transparent","#6E3F12"),border:"1px solid rgba(154,91,31,.35)",fontSize:8}}>Diag</span>}
         </div>
-        <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:5}}>
-          <div style={{fontSize:19,fontWeight:900,color:accent}}>{last.score}</div>
-          {last.max && <div style={{fontSize:11,color:"#94a3b8",fontWeight:600}}>/{last.max}</div>}
-          {lastPct!=null && <span style={{...mkPill(pctBg(lastPct),pctColor(lastPct)),marginLeft:4}}>{lastPct}%</span>}
-          {delta!=null&&ptsArr.length>1&&<div style={{fontSize:10,color:delta>0?"#15803d":delta<0?"#dc2626":"#64748b",fontWeight:700,marginLeft:"auto"}}>{delta>0?"▲+":delta<0?"▼":"→"}{Math.abs(delta)}%</div>}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+            <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:20,fontWeight:600,color:accent,letterSpacing:.2,lineHeight:1}}>{last.score}</div>
+            {last.max && <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"#66708A",fontWeight:500}}>/ {last.max}</div>}
+          </div>
+          {delta!=null&&ptsArr.length>1&&<div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:delta>0?"#4C7A4C":delta<0?"#8C2E2E":"#66708A",fontWeight:600,marginLeft:"auto",letterSpacing:.2}}>{delta>0?"+":delta<0?"−":"·"}{Math.abs(delta)}%</div>}
         </div>
+        {lastPct!=null && <div style={{marginBottom:8}}><PctBar value={lastPct} width={150}/></div>}
         <LineChart points={chartPoints} color={accent} max={100} height={60} width={230}/>
-        <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>{ptsArr.length} pt{ptsArr.length!==1?"s":""} · {last.date} · {srcLabels.join(", ")}</div>
+        <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",marginTop:6,letterSpacing:.2}}>{ptsArr.length} pt{ptsArr.length!==1?"s":""} · {last.date} · {srcLabels.join(", ")}</div>
       </div>
     );
   };
 
-  // Big domain card
+  // Big domain card — editorial treatment
   const renderDomainCard = (d)=>{
     const color = DOMAIN_COLOR[d.domain]||B2;
     const filtered = filterPts(d.pts);
@@ -2720,56 +2738,57 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
     const chartPoints = filtered.map((pt,i)=>({x:i,y:pctOf(pt)??0,label:`${pt.date} (${pt.difficulty||"—"})`}));
     const isOpen = expanded[d.key];
     const subskillNames = Object.keys(d.subskills);
-    const subjBg = SUBJ_COLOR[d.subject]?.bg||"#f8fafc";
 
     return(
-      <div key={d.key} style={{background:"#fff",borderRadius:14,border:`2px solid ${color}25`,borderLeft:`6px solid ${color}`,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,.05)"}}>
-        {/* Header bar */}
-        <div style={{background:subjBg,padding:"10px 14px",borderBottom:`1px solid ${color}22`,display:"flex",alignItems:"center",gap:10}}>
+      <div key={d.key} style={{background:"#fff",borderRadius:4,boxShadow:"0 0 0 1px rgba(15,26,46,.1)",borderLeft:`3px solid ${color}`,overflow:"hidden"}}>
+        {/* Header bar — editorial hairline row */}
+        <div style={{padding:"16px 20px",borderBottom:"1px solid rgba(15,26,46,.08)",display:"flex",alignItems:"center",gap:14}}>
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:10,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8}}>{d.subject}</div>
-            <div style={{fontSize:15,fontWeight:900,color}}>{d.domain}</div>
+            <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",textTransform:"uppercase",letterSpacing:1.2}}>{d.subject}</div>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:19,fontWeight:600,color:"#0F1A2E",letterSpacing:-.25,marginTop:3}}>{d.domain}</div>
           </div>
-          {avg!=null && <div style={{textAlign:"right"}}>
-            <div style={{fontSize:22,fontWeight:900,color:pctColor(avg)}}>{avg}%</div>
-            <div style={{fontSize:9,color:"#94a3b8",fontWeight:700}}>AVG · {filtered.length} pt{filtered.length!==1?"s":""}</div>
+          {avg!=null && <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5}}>
+            <PctBar value={avg} width={140}/>
+            <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",fontWeight:500,letterSpacing:.4,textTransform:"uppercase"}}>Avg · {filtered.length} pt{filtered.length!==1?"s":""}</div>
           </div>}
-          {delta!=null && <div style={{fontSize:11,color:delta>0?"#15803d":delta<0?"#dc2626":"#64748b",fontWeight:800,background:"#fff",padding:"3px 8px",borderRadius:12,border:`1px solid ${color}33`}}>{delta>0?"▲ +":delta<0?"▼ ":"→ "}{Math.abs(delta)}%</div>}
+          {delta!=null && <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:delta>0?"#4C7A4C":delta<0?"#8C2E2E":"#66708A",fontWeight:600,padding:"5px 10px",border:"1px solid "+(delta>0?"rgba(76,122,76,.35)":delta<0?"rgba(140,46,46,.35)":"rgba(15,26,46,.18)"),borderRadius:2,letterSpacing:.3}}>{delta>0?"+":delta<0?"−":"·"}{Math.abs(delta)}%</div>}
         </div>
 
         {/* Body: chart + difficulty breakdown */}
-        <div style={{padding:14}}>
+        <div style={{padding:20}}>
           {filtered.length>0 ? (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 180px",gap:14,alignItems:"center"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 200px",gap:20,alignItems:"center"}}>
               <LineChart points={chartPoints} color={color} max={100} height={110} width={400}/>
-              <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                <div style={{fontSize:9,fontWeight:800,color:"#94a3b8",textTransform:"uppercase",letterSpacing:0.8,marginBottom:2}}>By Difficulty</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:11,fontStyle:"italic",color:"#66708A",marginBottom:2}}>By Difficulty</div>
                 {DIFF_ORDER.map(diff=>{
                   const diffPts = d.byDiff[diff]||[];
                   if(diffPts.length===0) return null;
                   const a = avgPct(diffPts);
                   const lastD = diffPts[diffPts.length-1];
                   return(
-                    <div key={diff} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
-                      <div style={{width:10,height:10,borderRadius:3,background:DC[diff]}}/>
-                      <div style={{flex:1,color:"#475569",fontWeight:600,textTransform:"capitalize"}}>{diff}</div>
-                      <div style={{fontSize:10,color:"#94a3b8"}}>{lastD.score}/{lastD.max}</div>
-                      <span style={{...mkPill(pctBg(a),pctColor(a)),minWidth:38,textAlign:"center"}}>{a}%</span>
+                    <div key={diff} style={{display:"flex",flexDirection:"column",gap:3,fontSize:11}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{width:8,height:8,background:DC[diff],flexShrink:0}}/>
+                        <div style={{flex:1,color:"#2E3A57",fontWeight:500,textTransform:"capitalize"}}>{diff}</div>
+                        <div style={{fontSize:10,color:"#66708A",fontFamily:"'IBM Plex Mono',monospace"}}>{lastD.score}/{lastD.max}</div>
+                      </div>
+                      <div style={{paddingLeft:16}}><PctBar value={a} width={130}/></div>
                     </div>
                   );
                 })}
-                {DIFF_ORDER.every(diff=>(d.byDiff[diff]||[]).length===0) && <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No difficulty breakdown available (diagnostic only)</div>}
+                {DIFF_ORDER.every(diff=>(d.byDiff[diff]||[]).length===0) && <div style={{fontSize:10,color:"#66708A",fontStyle:"italic"}}>No difficulty breakdown (diagnostic only)</div>}
               </div>
             </div>
-          ) : <div style={{fontSize:11,color:"#94a3b8",fontStyle:"italic",textAlign:"center",padding:10}}>No data at this difficulty filter</div>}
+          ) : <div style={{fontSize:11,color:"#66708A",fontStyle:"italic",textAlign:"center",padding:16,fontFamily:"'Fraunces',Georgia,serif"}}>No data at this difficulty filter</div>}
 
           {/* Expand subskills toggle */}
-          {subskillNames.length>0 && <button onClick={()=>setExpanded(prev=>({...prev,[d.key]:!prev[d.key]}))} style={{...mkBtn(isOpen?`${color}15`:"#f1f5f9",color),marginTop:12,width:"100%",padding:"8px 12px",fontSize:11,fontWeight:700,border:`1px solid ${color}33`}}>
-            {isOpen?"▲ Hide":"▼ Show"} {subskillNames.length} subskill{subskillNames.length!==1?"s":""}
+          {subskillNames.length>0 && <button onClick={()=>setExpanded(prev=>({...prev,[d.key]:!prev[d.key]}))} style={{...mkBtn("transparent",color),border:"1px solid "+color+"55",marginTop:16,width:"100%",padding:"8px 14px",fontSize:11,letterSpacing:.3,textTransform:"uppercase",fontWeight:600}}>
+            {isOpen?"Hide":"Show"} · {subskillNames.length} Subskill{subskillNames.length!==1?"s":""}
           </button>}
 
-          {isOpen && subskillNames.length>0 && <div style={{marginTop:12,padding:12,background:`${color}08`,borderRadius:8,border:`1px dashed ${color}33`}}>
-            <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8,marginBottom:8}}>🔬 Subskill Performance Over Time</div>
+          {isOpen && subskillNames.length>0 && <div style={{marginTop:14,padding:16,background:"rgba(15,26,46,.02)",borderRadius:3,border:"1px solid rgba(15,26,46,.08)"}}>
+            <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",textTransform:"uppercase",letterSpacing:1.2,marginBottom:10}}>Subskill Performance Over Time</div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:10}}>
               {subskillNames.map(name=>miniCard(`${d.key}|${name}`,name,d.subskills[name],color))}
             </div>
@@ -2789,17 +2808,19 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
     setWlog({...wlog,score:"",notes:""});
   };
 
+  const fieldLabel = {fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",marginBottom:4,fontWeight:600,letterSpacing:1.2,textTransform:"uppercase"};
+
   return(
     <div>
-      <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:16}}>
+      <div style={{display:"grid",gridTemplateColumns:"340px 1fr",gap:20}}>
         {/* ========== LEFT: Quick Add ========== */}
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{display:"flex",flexDirection:"column",gap:16}}>
           {/* WellEd domain logger */}
-          <div style={{...CARD,borderLeft:`4px solid ${B2}`}}>
-            <div style={{fontSize:13,fontWeight:800,color:B2,marginBottom:12,display:"flex",alignItems:"center",gap:6}}>📚 Log WellEd Domain Score</div>
-            <div style={{display:"flex",flexDirection:"column",gap:9}}>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>DATE</div><input type="date" value={wlog.date} onChange={e=>setWlog({...wlog,date:e.target.value})} style={INP}/></div>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>SUBJECT</div>
+          <div style={{...CARD,padding:20,borderLeft:`3px solid ${B2}`}}>
+            <SH>Log WellEd Domain Score</SH>
+            <div style={{display:"flex",flexDirection:"column",gap:11}}>
+              <div><div style={fieldLabel}>Date</div><input type="date" value={wlog.date} onChange={e=>setWlog({...wlog,date:e.target.value})} style={INP}/></div>
+              <div><div style={fieldLabel}>Subject</div>
                 <select value={wlog.subject} onChange={e=>{
                   const subj = e.target.value;
                   const firstDom = WELLED_DOMAIN.find(x=>x.subject===subj);
@@ -2809,7 +2830,7 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
                   <option>Math</option>
                 </select>
               </div>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>DOMAIN</div>
+              <div><div style={fieldLabel}>Domain</div>
                 <select value={wlog.domain} onChange={e=>{
                   const entry = WELLED_DOMAIN.find(x=>x.subject===wlog.subject && x.domain===e.target.value);
                   setWlog({...wlog,domain:e.target.value,difficulty:entry?.diffs.includes(wlog.difficulty)?wlog.difficulty:entry?.diffs[0]||"easy"});
@@ -2817,30 +2838,30 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
                   {wlogDomainOptions.map(e=><option key={e.domain}>{e.domain}</option>)}
                 </select>
               </div>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>DIFFICULTY</div>
+              <div><div style={fieldLabel}>Difficulty</div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:5}}>
                   {(wlogCurrentEntry?.diffs||["easy","medium","hard","comprehensive"]).concat(["comprehensive"]).filter((v,i,a)=>a.indexOf(v)===i).map(diff=>{
                     const active = wlog.difficulty===diff;
-                    return <button key={diff} onClick={()=>setWlog({...wlog,difficulty:diff})} style={{...mkBtn(active?DC[diff]:"#f1f5f9",active?"#fff":"#475569"),padding:"6px 8px",fontSize:10,fontWeight:700,textTransform:"capitalize"}}>{diff}</button>;
+                    return <button key={diff} onClick={()=>setWlog({...wlog,difficulty:diff})} style={{...mkBtn(active?DC[diff]:"transparent",active?"#FAF7F2":"#2E3A57"),border:"1px solid "+(active?DC[diff]:"rgba(15,26,46,.15)"),padding:"6px 10px",fontSize:10,textTransform:"capitalize"}}>{diff}</button>;
                   })}
                 </div>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:6,alignItems:"end"}}>
-                <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>SCORE</div><input type="number" value={wlog.score} onChange={e=>setWlog({...wlog,score:e.target.value})} placeholder={`0-${wlogMax}`} max={wlogMax} min={0} style={INP}/></div>
-                <div style={{fontSize:12,color:"#94a3b8",fontWeight:700,paddingBottom:9}}>/ {wlogMax}</div>
+              <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:8,alignItems:"end"}}>
+                <div><div style={fieldLabel}>Score</div><input type="number" value={wlog.score} onChange={e=>setWlog({...wlog,score:e.target.value})} placeholder={`0-${wlogMax}`} max={wlogMax} min={0} style={INP}/></div>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12,color:"#66708A",fontWeight:500,paddingBottom:10}}>/ {wlogMax}</div>
               </div>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>NOTES</div><input value={wlog.notes} onChange={e=>setWlog({...wlog,notes:e.target.value})} placeholder="Optional…" style={INP}/></div>
-              <button onClick={wlogSubmit} disabled={!wlog.score} style={{...mkBtn(wlog.score?B2:"#cbd5e1","#fff"),padding:10,fontSize:13,cursor:wlog.score?"pointer":"not-allowed"}}>+ Log Score</button>
+              <div><div style={fieldLabel}>Notes</div><input value={wlog.notes} onChange={e=>setWlog({...wlog,notes:e.target.value})} placeholder="Optional…" style={{...INP,fontStyle:wlog.notes?"normal":"italic"}}/></div>
+              <button onClick={wlogSubmit} disabled={!wlog.score} style={{...mkBtn(wlog.score?B2:"rgba(15,26,46,.12)",wlog.score?"#FAF7F2":"#66708A"),padding:"10px 16px",fontSize:11,fontWeight:600,letterSpacing:.3,textTransform:"uppercase",cursor:wlog.score?"pointer":"not-allowed"}}>+ Log Score</button>
             </div>
           </div>
 
           {/* Manual full-test score */}
-          <div style={{...CARD,borderLeft:"4px solid #7c3aed"}}>
-            <div style={{fontSize:13,fontWeight:800,color:"#7c3aed",marginBottom:12}}>🎯 Log Full Test Score</div>
-            <div style={{display:"flex",flexDirection:"column",gap:9}}>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>DATE</div><input type="date" value={sfm.date} onChange={e=>setSfm(prev=>({...prev,date:e.target.value}))} style={INP}/></div>
+          <div style={{...CARD,padding:20,borderLeft:"3px solid #5B4B8A"}}>
+            <SH>Log Full Test Score</SH>
+            <div style={{display:"flex",flexDirection:"column",gap:11}}>
+              <div><div style={fieldLabel}>Date</div><input type="date" value={sfm.date} onChange={e=>setSfm(prev=>({...prev,date:e.target.value}))} style={INP}/></div>
               <div>
-                <div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>TEST / SECTION</div>
+                <div style={fieldLabel}>Test / Section</div>
                 <select value={sfm.testType} onChange={e=>setSfm(prev=>({...prev,testType:e.target.value}))} style={INP}>
                   <option value="">Select…</option>
                   <optgroup label="Full Practice Tests">
@@ -2855,59 +2876,58 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
                   <option value="Other">Other</option>
                 </select>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>SCORE</div><input type="number" value={sfm.score} onChange={e=>setSfm(prev=>({...prev,score:e.target.value}))} placeholder="1250" style={INP}/></div>
-                <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>MAX</div><input type="number" value={sfm.maxScore} onChange={e=>setSfm(prev=>({...prev,maxScore:e.target.value}))} placeholder="1600" style={INP}/></div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div><div style={fieldLabel}>Score</div><input type="number" value={sfm.score} onChange={e=>setSfm(prev=>({...prev,score:e.target.value}))} placeholder="1250" style={INP}/></div>
+                <div><div style={fieldLabel}>Max</div><input type="number" value={sfm.maxScore} onChange={e=>setSfm(prev=>({...prev,maxScore:e.target.value}))} placeholder="1600" style={INP}/></div>
               </div>
-              <div><div style={{fontSize:9,color:"#64748b",marginBottom:3,fontWeight:700,letterSpacing:0.5}}>NOTES</div><input value={sfm.notes} onChange={e=>setSfm(prev=>({...prev,notes:e.target.value}))} placeholder="Optional…" style={INP}/></div>
-              <button onClick={addScore} style={{...mkBtn("#7c3aed","#fff"),padding:10,fontSize:13}}>+ Add Score</button>
+              <div><div style={fieldLabel}>Notes</div><input value={sfm.notes} onChange={e=>setSfm(prev=>({...prev,notes:e.target.value}))} placeholder="Optional…" style={{...INP,fontStyle:sfm.notes?"normal":"italic"}}/></div>
+              <button onClick={addScore} style={{...mkBtn("#5B4B8A","#FAF7F2"),padding:"10px 16px",fontSize:11,fontWeight:600,letterSpacing:.3,textTransform:"uppercase"}}>+ Add Score</button>
             </div>
           </div>
 
-          <div style={{fontSize:10,color:"#64748b",lineHeight:1.5,padding:10,background:"#f1f5f9",borderRadius:8}}>💡 Scores from Assignment History and diagnostic PDFs are automatically aggregated here. WellEd logs & manual scores persist independently.</div>
+          <div style={{fontSize:11,color:"#66708A",lineHeight:1.55,padding:14,background:"#F3EEE4",borderRadius:3,border:"1px solid rgba(15,26,46,.06)",fontStyle:"italic",fontFamily:"'Fraunces',Georgia,serif"}}>Scores from Assignment History and diagnostic PDFs are automatically aggregated here. WellEd logs and manual scores persist independently.</div>
         </div>
 
         {/* ========== RIGHT: Aggregated view ========== */}
-        <div style={{display:"flex",flexDirection:"column",gap:16}}>
-          {pts.length===0 && <div style={{...CARD,padding:40,textAlign:"center",color:"#94a3b8"}}>
-            <div style={{fontSize:28,marginBottom:8}}>📊</div>
-            <div style={{fontSize:14,fontWeight:600}}>No scores recorded yet</div>
-            <div style={{fontSize:11,marginTop:4}}>Upload a diagnostic PDF, log a WellEd score, or enter scores in Assignment History.</div>
+        <div style={{display:"flex",flexDirection:"column",gap:20}}>
+          {pts.length===0 && <div style={{...CARD,padding:"72px 40px",textAlign:"center"}}>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:8}}>No scores recorded yet.</div>
+            <div style={{fontSize:11,color:"#66708A"}}>Upload a diagnostic PDF, log a WellEd score, or enter scores in Assignment History.</div>
           </div>}
 
           {/* SECTION 1: Full practice tests */}
-          {fullGroups.length>0 && <div style={{...CARD,borderTop:"4px solid #7c3aed"}}>
-            <div style={{fontSize:14,fontWeight:800,color:"#7c3aed",marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
-              🎯 Full Practice Tests & Section Scores
-              <div style={{fontSize:10,color:"#94a3b8",fontWeight:600,marginLeft:"auto"}}>{fullGroups.length} track{fullGroups.length!==1?"s":""}</div>
+          {fullGroups.length>0 && <div style={{...CARD,padding:20}}>
+            <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:14,paddingBottom:10,borderBottom:"1px solid rgba(15,26,46,.08)"}}>
+              <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:19,fontWeight:600,color:"#0F1A2E",letterSpacing:-.25}}>Full Practice Tests &amp; Section Scores</div>
+              <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",fontWeight:500,letterSpacing:1,textTransform:"uppercase"}}>{fullGroups.length} track{fullGroups.length!==1?"s":""}</div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:10}}>
-              {fullGroups.map(g=>miniCard(g.key,g.key,g.pts,"#7c3aed"))}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:12}}>
+              {fullGroups.map(g=>miniCard(g.key,g.key,g.pts,"#5B4B8A"))}
             </div>
           </div>}
 
           {/* SECTION 2: Domain Performance */}
-          {domainCards.length>0 && <div style={{...CARD}}>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
-              <div style={{fontSize:14,fontWeight:800,color:B2}}>📚 Domain Performance · Expand for Subskills</div>
-              <div style={{marginLeft:"auto",display:"flex",gap:5,alignItems:"center"}}>
-                <div style={{fontSize:9,color:"#94a3b8",fontWeight:700,textTransform:"uppercase",letterSpacing:0.6}}>Filter:</div>
+          {domainCards.length>0 && <div style={{...CARD,padding:20}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap",paddingBottom:12,borderBottom:"1px solid rgba(15,26,46,.08)"}}>
+              <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:19,fontWeight:600,color:"#0F1A2E",letterSpacing:-.25,flex:1}}>Domain Performance</div>
+              <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",fontWeight:500,textTransform:"uppercase",letterSpacing:1,marginRight:4}}>Filter</div>
                 {["all","easy","medium","hard","comprehensive"].map(d=>{
                   const active = diffFilter===d;
                   const c = d==="all"?B2:DC[d];
-                  return <button key={d} onClick={()=>setDiffFilter(d)} style={{...mkBtn(active?c:"#f1f5f9",active?"#fff":"#475569"),padding:"4px 9px",fontSize:10,fontWeight:700,textTransform:"capitalize"}}>{d==="all"?"All":d}</button>;
+                  return <button key={d} onClick={()=>setDiffFilter(d)} style={{...mkBtn(active?c:"transparent",active?"#FAF7F2":"#2E3A57"),border:"1px solid "+(active?c:"rgba(15,26,46,.15)"),padding:"4px 10px",fontSize:10,textTransform:"capitalize"}}>{d==="all"?"All":d}</button>;
                 })}
               </div>
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
               {domainCards.map(renderDomainCard)}
             </div>
           </div>}
 
           {/* SECTION 3: Orphan subskills (no parent domain data) */}
-          {domainCards.length===0 && subPts.length>0 && <div style={{...CARD}}>
-            <div style={{fontSize:14,fontWeight:800,color:B2,marginBottom:12}}>🔬 Subskill Data</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:10}}>
+          {domainCards.length===0 && subPts.length>0 && <div style={{...CARD,padding:20}}>
+            <SH>Subskill Data</SH>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:12}}>
               {(()=>{
                 const sg={};
                 subPts.forEach(pt=>{const k=pt.subskill||pt.subcategory; if(!sg[k])sg[k]=[]; sg[k].push(pt);});
@@ -2917,23 +2937,23 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
           </div>}
 
           {/* SECTION 4: Manual entries table */}
-          {(p.scores||[]).length>0 && <div style={{...CARD}}>
-            <div style={{fontSize:12,fontWeight:800,color:"#64748b",marginBottom:10,textTransform:"uppercase",letterSpacing:0.8}}>Manual Entry Log</div>
+          {(p.scores||[]).length>0 && <div style={{...CARD,padding:20}}>
+            <SH>Manual Entry Log</SH>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                <thead><tr style={{background:"#f1f5f9"}}>{["Date","Test","Score","Max","%","Notes",""].map(h=><th key={h} style={{padding:"6px 9px",textAlign:"left",fontSize:9,color:"#64748b",fontWeight:700}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Date","Test","Score","Max","%","Notes",""].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",fontWeight:600,letterSpacing:1.2,textTransform:"uppercase",borderBottom:"1px solid rgba(15,26,46,.15)"}}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {[...p.scores].sort((a,b)=>b.date.localeCompare(a.date)).map(sc=>{
+                  {[...p.scores].sort((a,b)=>b.date.localeCompare(a.date)).map((sc,i,arr)=>{
                     const pct=sc.maxScore?Math.round((Number(sc.score)/Number(sc.maxScore))*100):null;
                     return(
-                      <tr key={sc.id} style={{borderBottom:"1px solid #f1f5f9"}}>
-                        <td style={{padding:"6px 9px",color:"#475569"}}>{sc.date}</td>
-                        <td style={{padding:"6px 9px",fontWeight:700,color:B2}}>{sc.testType}</td>
-                        <td style={{padding:"6px 9px",fontWeight:800}}>{sc.score}</td>
-                        <td style={{padding:"6px 9px",color:"#94a3b8"}}>{sc.maxScore||"—"}</td>
-                        <td style={{padding:"6px 9px"}}>{pct!==null&&<span style={mkPill(pctBg(pct),pctColor(pct))}>{pct}%</span>}</td>
-                        <td style={{padding:"6px 9px",color:"#94a3b8"}}>{sc.notes||"—"}</td>
-                        <td style={{padding:"6px 9px"}}><button onClick={()=>delScore(sc.id)} style={{...mkBtn("#fee2e2","#dc2626"),padding:"2px 8px",fontSize:10}}>✕</button></td>
+                      <tr key={sc.id} style={{borderBottom:i===arr.length-1?"none":"1px solid rgba(15,26,46,.06)"}}>
+                        <td style={{padding:"10px 12px",color:"#2E3A57",fontFamily:"'IBM Plex Mono',monospace",fontSize:11}}>{sc.date}</td>
+                        <td style={{padding:"10px 12px",fontWeight:500,color:"#0F1A2E",fontFamily:"'Fraunces',Georgia,serif",fontSize:13}}>{sc.testType}</td>
+                        <td style={{padding:"10px 12px",fontWeight:600,color:"#0F1A2E",fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{sc.score}</td>
+                        <td style={{padding:"10px 12px",color:"#66708A",fontFamily:"'IBM Plex Mono',monospace"}}>{sc.maxScore||<span style={{color:"rgba(15,26,46,.25)"}}>—</span>}</td>
+                        <td style={{padding:"10px 12px"}}>{pct!==null?<PctBar value={pct} width={80}/>:<span style={{color:"rgba(15,26,46,.25)"}}>—</span>}</td>
+                        <td style={{padding:"10px 12px",color:"#66708A",fontStyle:"italic"}}>{sc.notes||<span style={{color:"rgba(15,26,46,.25)",fontStyle:"normal"}}>—</span>}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right"}}><button onClick={()=>delScore(sc.id)} style={{...mkBtn("transparent","#8C2E2E"),border:"1px solid rgba(140,46,46,.3)",padding:"3px 10px",fontSize:10}}>✕</button></td>
                       </tr>
                     );
                   })}
@@ -2943,26 +2963,26 @@ function ScoreHistoryPanel({p, sfm, setSfm, addScore, delScore, addWelledLog, de
           </div>}
 
           {/* SECTION 5: WellEd log table */}
-          {(p.welledLogs||[]).length>0 && <div style={{...CARD}}>
-            <div style={{fontSize:12,fontWeight:800,color:"#64748b",marginBottom:10,textTransform:"uppercase",letterSpacing:0.8}}>WellEd Domain Log</div>
+          {(p.welledLogs||[]).length>0 && <div style={{...CARD,padding:20}}>
+            <SH>WellEd Domain Log</SH>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                <thead><tr style={{background:"#f1f5f9"}}>{["Date","Subject","Domain","Difficulty","Score","%","Notes",""].map(h=><th key={h} style={{padding:"6px 9px",textAlign:"left",fontSize:9,color:"#64748b",fontWeight:700}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Date","Subject","Domain","Difficulty","Score","%","Notes",""].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",fontWeight:600,letterSpacing:1.2,textTransform:"uppercase",borderBottom:"1px solid rgba(15,26,46,.15)"}}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {[...(p.welledLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(lg=>{
+                  {[...(p.welledLogs||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map((lg,i,arr)=>{
                     const mx = lg.max||(lg.subject==="Math"?22:27);
                     const pct = Math.round((Number(lg.score)/mx)*100);
                     const dc = DOMAIN_COLOR[lg.domain]||B2;
                     return(
-                      <tr key={lg.id} style={{borderBottom:"1px solid #f1f5f9"}}>
-                        <td style={{padding:"6px 9px",color:"#475569"}}>{lg.date}</td>
-                        <td style={{padding:"6px 9px",color:"#475569"}}>{lg.subject}</td>
-                        <td style={{padding:"6px 9px",fontWeight:700,color:dc}}>{lg.domain}</td>
-                        <td style={{padding:"6px 9px"}}><span style={mkPill(`${DC[lg.difficulty]||"#94a3b8"}22`,DC[lg.difficulty]||"#475569")}>{lg.difficulty}</span></td>
-                        <td style={{padding:"6px 9px",fontWeight:800}}>{lg.score}/{mx}</td>
-                        <td style={{padding:"6px 9px"}}><span style={mkPill(pctBg(pct),pctColor(pct))}>{pct}%</span></td>
-                        <td style={{padding:"6px 9px",color:"#94a3b8"}}>{lg.notes||"—"}</td>
-                        <td style={{padding:"6px 9px"}}><button onClick={()=>delWelledLog(lg.id)} style={{...mkBtn("#fee2e2","#dc2626"),padding:"2px 8px",fontSize:10}}>✕</button></td>
+                      <tr key={lg.id} style={{borderBottom:i===arr.length-1?"none":"1px solid rgba(15,26,46,.06)"}}>
+                        <td style={{padding:"10px 12px",color:"#2E3A57",fontFamily:"'IBM Plex Mono',monospace",fontSize:11}}>{lg.date}</td>
+                        <td style={{padding:"10px 12px",color:"#2E3A57"}}>{lg.subject}</td>
+                        <td style={{padding:"10px 12px",fontWeight:500,color:dc,fontFamily:"'Fraunces',Georgia,serif",fontSize:13}}>{lg.domain}</td>
+                        <td style={{padding:"10px 12px"}}><span style={{...mkPill("transparent",DC[lg.difficulty]||"#66708A"),border:"1px solid "+(DC[lg.difficulty]||"#66708A")+"55"}}>{lg.difficulty}</span></td>
+                        <td style={{padding:"10px 12px",fontWeight:600,color:"#0F1A2E",fontFamily:"'IBM Plex Mono',monospace"}}>{lg.score}/{mx}</td>
+                        <td style={{padding:"10px 12px"}}><PctBar value={pct} width={80}/></td>
+                        <td style={{padding:"10px 12px",color:"#66708A",fontStyle:"italic"}}>{lg.notes||<span style={{color:"rgba(15,26,46,.25)",fontStyle:"normal"}}>—</span>}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right"}}><button onClick={()=>delWelledLog(lg.id)} style={{...mkBtn("transparent","#8C2E2E"),border:"1px solid rgba(140,46,46,.3)",padding:"3px 10px",fontSize:10}}>✕</button></td>
                       </tr>
                     );
                   })}
