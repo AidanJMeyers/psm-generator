@@ -1,5 +1,7 @@
 /* ============ CONSTANTS ============ */
-const B1="#003258", B2="#004a79", B3="#0066a6";
+/* ATS brand navies — sampled from the official logo (2.png = #004A79).
+   B1 = deepest, B2 = primary, B3 = lighter accent. Do not alter without brand approval. */
+const B1="#003258", B2="#004A79", B3="#0066A6";
 const DC={easy:"#16a34a",medium:"#d97706",hard:"#dc2626",comprehensive:"#7c3aed",mixed:"#7c3aed"};
 const SUBJ_COLOR={"Reading & Writing":{bg:"#eef2ff",fg:"#4338ca",accent:"#6366f1"},"Math":{bg:"#ecfeff",fg:"#0e7490",accent:"#06b6d4"}};
 const DOMAIN_COLOR={"Information & Ideas":"#4f46e5","Craft & Structure":"#7c3aed","Expression of Ideas":"#2563eb","Standard English Conventions":"#0891b2","Algebra":"#059669","Advanced Math":"#0d9488","Problem-Solving & Data Analysis":"#ca8a04","Geometry & Trigonometry":"#dc2626"};
@@ -1114,53 +1116,52 @@ function App(){
 
   /* ============ RENDER ============ */
   return(
-    <div style={{fontFamily:"'Segoe UI',system-ui,sans-serif",background:"#eef2f7",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+    <div style={{fontFamily:"'IBM Plex Sans',system-ui,sans-serif",background:"var(--paper)",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
       {toast&&<div style={{position:"fixed",top:16,right:16,background:"#1e293b",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,.25)"}}>{toast}</div>}
       {parsing&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#4338ca",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999}} className="pl">Parsing diagnostic PDF(s)...</div>}
 
-      {/* HEADER */}
-      <div style={{background:`linear-gradient(135deg,${B1} 0%,${B2} 55%,${B3} 100%)`,color:"#fff",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:58,flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <img src="https://www.affordabletutoringsolutions.org/__static/a5b47adc-5f67-4265-b84a-f8af839f6a17/image_desktop" alt="ATS" style={{height:32,borderRadius:6}} onError={e=>{e.target.style.display="none";e.target.nextSibling.style.display="flex";}}/>
-          <div style={{width:36,height:36,borderRadius:10,background:"rgba(255,255,255,.15)",display:"none",alignItems:"center",justifyContent:"center",fontSize:18}}>📐</div>
-          <div>
-            <div style={{fontSize:16,fontWeight:800}}>Affordable Tutoring Solutions</div>
-            <div style={{fontSize:10,opacity:.75,letterSpacing:.5}}>PSM GENERATOR &amp; STUDENT TRACKING SYSTEM</div>
+      {/* HEADER — editorial wordmark + refined action rail */}
+      <div data-psm-header style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",flexShrink:0,gap:24}}>
+        <div data-psm-brand style={{display:"flex",alignItems:"center",gap:16}}>
+          <img src="ats_logo.png" alt="ATS" data-psm-logo/>
+          <div style={{display:"flex",flexDirection:"column"}}>
+            <div data-psm-eyebrow>Affordable Tutoring Solutions · Est. 2023</div>
+            <div data-psm-title>PSM <em>Generator</em></div>
           </div>
         </div>
-        <div style={{display:"flex",gap:10,alignItems:"center",fontSize:12,opacity:.95}}>
-          <div style={{display:"flex",background:"rgba(255,255,255,.12)",borderRadius:7,padding:2}}>
+        <div data-psm-actions style={{display:"flex",alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <div data-psm-exam style={{display:"flex",gap:0,border:"1px solid var(--rule)",borderRadius:999,padding:2}}>
             {["SAT","PSAT"].map(t=>(
-              <button key={t} onClick={()=>setExamType(t)} style={{background:examType===t?"#fff":"transparent",color:examType===t?B2:"#fff",border:"none",borderRadius:5,padding:"4px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{t}</button>
+              <button key={t} data-active={examType===t} onClick={()=>setExamType(t)} style={{padding:"4px 14px",cursor:"pointer"}}>{t}</button>
             ))}
           </div>
-          <a href="https://tutor.thesatcrashcourse.com/" target="_blank" rel="noopener noreferrer" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600,textDecoration:"none"}}>WellEd</a>
-          <a href="https://ats.wise.live/get-started" target="_blank" rel="noopener noreferrer" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600,textDecoration:"none"}}>Wise</a>
-          <span>👤 {students.length}</span>
-          <span>📋 {students.reduce((n,st)=>n+(st.assignments||[]).reduce((m,a)=>m+(a.worksheets||[]).length,0),0)}</span>
-          <div title={cloudStatus==="synced"?"Cloud synced — all tutors see changes in real-time":cloudStatus==="connecting"?"Connecting to cloud...":"Offline — changes saved locally"} style={{display:"flex",alignItems:"center",gap:4,background:cloudStatus==="synced"?"rgba(34,197,94,.25)":cloudStatus==="connecting"?"rgba(234,179,8,.25)":"rgba(239,68,68,.25)",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"default"}}>
-            <div style={{width:7,height:7,borderRadius:"50%",background:cloudStatus==="synced"?"#22c55e":cloudStatus==="connecting"?"#eab308":"#ef4444"}}/>
-            {cloudStatus==="synced"?"☁️ Cloud":cloudStatus==="connecting"?"⏳ Syncing":"⚠️ Offline"}
-          </div>
-          <button onClick={exportData} title="Export data" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>⬇ Export</button>
-          <label title="Import data" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>
-            ⬆ Import
+          <a href="https://tutor.thesatcrashcourse.com/" target="_blank" rel="noopener noreferrer">WellEd</a>
+          <a href="https://ats.wise.live/get-started" target="_blank" rel="noopener noreferrer">Wise</a>
+          <span data-psm-chip title="Enrolled students" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{students.length.toString().padStart(2,"0")} students</span>
+          <span data-psm-chip title="Total assigned worksheets" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{students.reduce((n,st)=>n+(st.assignments||[]).reduce((m,a)=>m+(a.worksheets||[]).length,0),0)} assigned</span>
+          <span data-psm-chip title={cloudStatus==="synced"?"Cloud synced — all tutors see changes in real-time":cloudStatus==="connecting"?"Connecting to cloud...":"Offline — changes saved locally"} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:cloudStatus==="synced"?"var(--ok)":cloudStatus==="connecting"?"var(--warn)":"var(--danger)"}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>
+            {cloudStatus==="synced"?"Synced":cloudStatus==="connecting"?"Syncing":"Offline"}
+          </span>
+          <button onClick={exportData} title="Export data">Export</button>
+          <label title="Import data" style={{cursor:"pointer"}}>
+            Import
             <input type="file" accept="application/json" onChange={importData} style={{display:"none"}}/>
           </label>
         </div>
       </div>
 
-      {/* TABS */}
-      <div style={{background:"#fff",borderBottom:"2px solid #e2e8f0",display:"flex",padding:"0 24px",gap:2,flexShrink:0}}>
-        {[{id:"generator",icon:"📋",label:"Generator"},{id:"students",icon:"👤",label:"Students"},{id:"heatmap",icon:"🔥",label:"Heat Map"},{id:"scores",icon:"📊",label:"Score Tracking"}].map(t=>(
-          <button key={t.id} onClick={()=>{if(t.id!=="students")setProfile(null);setTab(t.id);}} style={{border:"none",background:"none",cursor:"pointer",padding:"12px 18px",fontSize:13,fontWeight:tab===t.id?700:500,color:tab===t.id?B2:"#64748b",borderBottom:tab===t.id?`3px solid ${B2}`:"3px solid transparent",marginBottom:-2,display:"flex",alignItems:"center",gap:6}}>
-            <span>{t.icon}</span>{t.label}
+      {/* TABS — editorial nav with serif labels */}
+      <div data-psm-tabs style={{display:"flex",flexShrink:0}}>
+        {[{id:"generator",label:"Generator"},{id:"students",label:"Students"},{id:"heatmap",label:"Heat Map"},{id:"scores",label:"Score Tracking"}].map(t=>(
+          <button key={t.id} data-active={tab===t.id} onClick={()=>{if(t.id!=="students")setProfile(null);setTab(t.id);}} style={{border:"none",background:"none",cursor:"pointer"}}>
+            {t.label}
           </button>
         ))}
       </div>
 
       {/* BODY */}
-      <div style={{flex:1,padding:20,overflowY:"auto"}}>
+      <div data-psm-body style={{flex:1,overflowY:"auto"}}>
         {tab==="generator"&&<GeneratorTab {...{
           students,curStudent,selSt,setSelSt,openProfile,
           subjF,setSubjF,domF,setDomF,sdomF,setSdomF,diffF,setDiffF,srch,setSrch,
