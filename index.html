@@ -10,8 +10,20 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
 if(window['pdfjsLib']){window['pdfjsLib'].GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}
+// Initialize Firebase
+firebase.initializeApp({
+  apiKey: "AIzaSyAr4Gbc3nCV6zbJKSg1_xWUqsMVqFnhmjg",
+  authDomain: "psm-generator.firebaseapp.com",
+  projectId: "psm-generator",
+  storageBucket: "psm-generator.firebasestorage.app",
+  messagingSenderId: "456789704122",
+  appId: "1:456789704122:web:b08189d7f6472c6206b183"
+});
+window.db = firebase.firestore();
 </script>
 <style>
   html,body,#root{margin:0;padding:0;height:100%;}
@@ -539,11 +551,29 @@ const heatColorPct = (pct)=>{
   return "#dc2626";
 };
 
+/* ============ FIRESTORE HELPERS ============ */
+// Firestore is initialized in the HTML shell as window.db
+// We use a single document "psm-data/main" to store all app data
+// This keeps things simple — one real-time listener, one write target
+const FS_DOC = "psm-data/main";
+const fsRef = ()=> window.db ? window.db.doc(FS_DOC) : null;
+// Write to Firestore (debounced to avoid rapid writes)
+let _fsWriteTimer = null;
+const fsWrite = (data)=>{
+  const ref = fsRef();
+  if(!ref) return;
+  if(_fsWriteTimer) clearTimeout(_fsWriteTimer);
+  _fsWriteTimer = setTimeout(()=>{
+    ref.set(data, {merge:true}).catch(e=>console.warn("[Firestore] write error:", e));
+  }, 800);
+};
+
 /* ============ APP ============ */
 function App(){
   const[tab,setTab]=useState("generator");
   const[students,setStudents]=useState(()=>sLoad("psm_v4",sLoad("psm_v3",[])));
   const[selSt,setSelSt]=useState("");
+  const[cloudStatus,setCloudStatus]=useState("connecting"); // connecting | synced | offline
   // Filters
   const[subjF,setSubjF]=useState("All");
   const[domF,setDomF]=useState("All");
@@ -590,9 +620,58 @@ function App(){
   const welledInputRef = useRef(null);
   // Custom assignments
   const[customAssignments,setCustomAssignments]=useState(()=>sLoad("psm_custom_asg",[]));
-  useEffect(()=>{sSave("psm_custom_asg",customAssignments);},[customAssignments]);
 
-  useEffect(()=>{sSave("psm_v4",students);},[students]);
+  // Track whether current state came from Firestore (prevent write-back loops)
+  const _fromFirestore = useRef(false);
+
+  // ── Firestore real-time sync ──
+  useEffect(()=>{
+    const ref = fsRef();
+    if(!ref){
+      setCloudStatus("offline");
+      console.log("[Firestore] No db available, using localStorage only");
+      return;
+    }
+    // Subscribe to real-time updates
+    const unsub = ref.onSnapshot((snap)=>{
+      if(snap.exists){
+        const data = snap.data();
+        _fromFirestore.current = true;
+        if(data.students) setStudents(data.students);
+        if(data.customAssignments) setCustomAssignments(data.customAssignments);
+        _fromFirestore.current = false;
+        setCloudStatus("synced");
+        // Also update localStorage as offline cache
+        if(data.students) sSave("psm_v4", data.students);
+        if(data.customAssignments) sSave("psm_custom_asg", data.customAssignments);
+      } else {
+        // Firestore doc doesn't exist yet — seed from localStorage (migration)
+        console.log("[Firestore] No cloud data found, seeding from localStorage...");
+        const localStudents = sLoad("psm_v4", sLoad("psm_v3", []));
+        const localCustom = sLoad("psm_custom_asg", []);
+        ref.set({students: localStudents, customAssignments: localCustom})
+          .then(()=>{console.log("[Firestore] Seeded successfully"); setCloudStatus("synced");})
+          .catch(e=>{console.warn("[Firestore] Seed failed:", e); setCloudStatus("offline");});
+      }
+    }, (err)=>{
+      console.warn("[Firestore] Listen error:", err);
+      setCloudStatus("offline");
+    });
+    return ()=>unsub();
+  }, []);
+
+  // ── Write to Firestore on state changes (skip if change came from Firestore) ──
+  useEffect(()=>{
+    if(_fromFirestore.current) return;
+    sSave("psm_v4", students); // always cache locally
+    fsWrite({students});
+  },[students]);
+
+  useEffect(()=>{
+    if(_fromFirestore.current) return;
+    sSave("psm_custom_asg", customAssignments);
+    fsWrite({customAssignments});
+  },[customAssignments]);
 
   const showToast=(msg)=>{setToast(msg);setTimeout(()=>setToast(""),2500);};
 
@@ -780,35 +859,50 @@ function App(){
     const ATS_GRAY = [100,116,139]; // #64748b
     const ATS_TEXT = [30,41,59]; // #1e293b
     let y = margin;
-    // Try to load the ATS logo
-    let logoData = null;
-    try{
+    // Try to load ATS logos (icon + horizontal)
+    let iconData = null, horizData = null;
+    const loadImg = (url)=>new Promise((resolve)=>{
       const img = new Image();
       img.crossOrigin = "anonymous";
-      await new Promise((resolve,reject)=>{
-        img.onload=resolve; img.onerror=reject;
-        img.src="https://www.affordabletutoringsolutions.org/__static/jdj5jdewjge5r21lmvdyu0vwztrzwdzy/ATS-Horiz-Logo(2)";
-        setTimeout(reject, 4000);
-      });
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-      canvas.getContext("2d").drawImage(img,0,0);
-      logoData = canvas.toDataURL("image/png");
-    }catch(e){console.log("Logo fetch skipped:",e);}
+      img.onload=()=>{
+        try{
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext("2d").drawImage(img,0,0);
+          resolve(c.toDataURL("image/png"));
+        }catch{resolve(null);}
+      };
+      img.onerror=()=>resolve(null);
+      img.src=url;
+      setTimeout(()=>resolve(null), 4000);
+    });
+    [iconData, horizData] = await Promise.all([
+      loadImg("https://www.affordabletutoringsolutions.org/__static/a5b47adc-5f67-4265-b84a-f8af839f6a17/image_desktop"),
+      loadImg("https://www.affordabletutoringsolutions.org/__static/jdj5jdewjge5r21lmvdyu0vwztrzwdzy/ATS-Horiz-Logo(2)")
+    ]);
 
     // ── Header on first page ──
     // Navy header bar
     doc.setFillColor(...ATS_NAVY);
     doc.rect(0, 0, pageW, 72, "F");
-    // Logo or text fallback
-    if(logoData){
-      try{doc.addImage(logoData,"PNG",margin,12,160,48);}catch(e){
-        doc.setFontSize(18); doc.setFont("helvetica","bold"); doc.setTextColor(255,255,255);
-        doc.text("Affordable Tutoring Solutions", margin, 42);
-      }
-    } else {
+    // Logo: prefer horizontal logo, fallback to icon + text, fallback to text only
+    let logoX = margin;
+    if(horizData){
+      try{doc.addImage(horizData,"PNG",margin,10,180,52); logoX=margin+186;}catch(e){}
+    }
+    if(logoX===margin && iconData){
+      try{doc.addImage(iconData,"PNG",margin,10,48,48); logoX=margin+54;}catch(e){}
+    }
+    if(logoX===margin){
+      // Pure text fallback
       doc.setFontSize(18); doc.setFont("helvetica","bold"); doc.setTextColor(255,255,255);
       doc.text("Affordable Tutoring Solutions", margin, 42);
+    } else {
+      // Add text beside logo
+      doc.setFontSize(14); doc.setFont("helvetica","bold"); doc.setTextColor(255,255,255);
+      doc.text("Affordable Tutoring Solutions", logoX, 34);
+      doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(200,220,240);
+      doc.text("PSM Assignment", logoX, 48);
     }
     // Tagline on right
     doc.setFontSize(8); doc.setFont("helvetica","italic"); doc.setTextColor(200,220,240);
@@ -1094,6 +1188,10 @@ function App(){
           <a href="https://ats.wise.live/get-started" target="_blank" rel="noopener noreferrer" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600,textDecoration:"none"}}>Wise</a>
           <span>👤 {students.length}</span>
           <span>📋 {students.reduce((n,st)=>n+(st.assignments||[]).reduce((m,a)=>m+(a.worksheets||[]).length,0),0)}</span>
+          <div title={cloudStatus==="synced"?"Cloud synced — all tutors see changes in real-time":cloudStatus==="connecting"?"Connecting to cloud...":"Offline — changes saved locally"} style={{display:"flex",alignItems:"center",gap:4,background:cloudStatus==="synced"?"rgba(34,197,94,.25)":cloudStatus==="connecting"?"rgba(234,179,8,.25)":"rgba(239,68,68,.25)",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"default"}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:cloudStatus==="synced"?"#22c55e":cloudStatus==="connecting"?"#eab308":"#ef4444"}}/>
+            {cloudStatus==="synced"?"☁️ Cloud":cloudStatus==="connecting"?"⏳ Syncing":"⚠️ Offline"}
+          </div>
           <button onClick={exportData} title="Export data" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>⬇ Export</button>
           <label title="Import data" style={{background:"rgba(255,255,255,.15)",border:"none",color:"#fff",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>
             ⬆ Import

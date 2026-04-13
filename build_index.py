@@ -12,8 +12,20 @@ shell_head = r'''<!DOCTYPE html>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
 if(window['pdfjsLib']){window['pdfjsLib'].GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}
+// Initialize Firebase
+firebase.initializeApp({
+  apiKey: "AIzaSyAr4Gbc3nCV6zbJKSg1_xWUqsMVqFnhmjg",
+  authDomain: "psm-generator.firebaseapp.com",
+  projectId: "psm-generator",
+  storageBucket: "psm-generator.firebasestorage.app",
+  messagingSenderId: "456789704122",
+  appId: "1:456789704122:web:b08189d7f6472c6206b183"
+});
+window.db = firebase.firestore();
 </script>
 <style>
   html,body,#root{margin:0;padding:0;height:100%;}
