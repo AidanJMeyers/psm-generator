@@ -2,49 +2,123 @@ rules_version = '2';
 
 // PSM Generator — Firestore security rules
 //
-// Access model (Phase 1 — tutors only):
-//   Anyone signed in with a verified @affordabletutoringsolutions.org Google
-//   Workspace account can read and write every document. Everything else is
-//   denied. The auth gate in app.jsx uses the same domain hint, but the UI
-//   hint is NOT a security boundary — these rules are.
+// Access model (Phase B — dual-gate during auth migration):
+//   Access is granted if EITHER the legacy workspace gate OR the new
+//   allowlist gate is satisfied. This lets the existing tutor roster keep
+//   working with @affordabletutoringsolutions.org accounts while we roll
+//   out the allowlist model for tutors who will lose workspace accounts.
 //
-// Phase 2 (future — student / parent portal):
-//   Students and parents will sign in with any Google account and receive a
-//   custom claim (role: 'student' | 'parent', studentId: '<doc-id>') minted
-//   by an admin script. They'll get read-only access to their own student
-//   document and its subcollections. See the commented branch below — do
-//   NOT uncomment until the custom-claim minting flow is built, tested, and
-//   the data model has per-student documents (current schema is one blob
-//   at psm-data/main, which is incompatible with per-student reads).
+//   See docs/AUTH_MIGRATION_PLAN.md and docs/AUTH_MIGRATION_SESSION_2.md
+//   for the full cutover plan. The dual-gate is retired in Phase D, at
+//   which point isWorkspaceUser() is removed and only the allowlist path
+//   remains.
+//
+// Phase 2 (future — student/parent portal):
+//   The student/parent portal requires per-student documents rather than
+//   the single psm-data/main blob — see docs/PHASE_2_PORTAL_PROMPT.md.
+//   The commented-out scaffold at the bottom of this file shows the
+//   intended shape once per-student docs exist. Do NOT uncomment until
+//   the schema migration ships.
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isTutor() {
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    // Legacy gate: verified @affordabletutoringsolutions.org Google account.
+    // Kept intact during Phases B and C so the existing tutor roster is
+    // unaffected by the migration. Removed in Phase D.
+    function isWorkspaceUser() {
       return request.auth != null
         && request.auth.token.email_verified == true
         && request.auth.token.email.matches('.*@affordabletutoringsolutions[.]org');
     }
 
-    // Phase 1: tutors have full access to everything.
-    match /{document=**} {
-      allow read, write: if isTutor();
+    // Allowlist-doc ID is always lowercased email.
+    function emailKey() {
+      return request.auth.token.email.lower();
     }
 
-    // Phase 2 scaffolding — DO NOT UNCOMMENT until student portal ships.
-    // match /students/{studentId} {
-    //   allow read: if isTutor()
-    //     || (request.auth != null
-    //         && request.auth.token.role in ['student', 'parent']
-    //         && request.auth.token.studentId == studentId);
-    //   allow write: if isTutor();
+    // True iff the signed-in user has an active allowlist entry (any role).
+    // One Firestore read per rule evaluation — fine at current scale; see
+    // parent plan for the custom-claims upgrade path.
+    function isAllowlisted() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/allowlist/$(emailKey()))
+        && get(/databases/$(database)/documents/allowlist/$(emailKey())).data.active == true;
+    }
+
+    // Role of the signed-in user from their allowlist entry. Only call this
+    // after isAllowlisted() has returned true — otherwise the get() errors.
+    function allowlistRole() {
+      return get(/databases/$(database)/documents/allowlist/$(emailKey())).data.role;
+    }
+
+    // True iff user is an active allowlist admin.
+    function isAllowlistAdmin() {
+      return isAllowlisted() && allowlistRole() == 'admin';
+    }
+
+    // Can this user write the main app blob? Workspace users always can
+    // during the migration; allowlist users can only if they're tutor/admin.
+    // Students and parents are read-only (Phase 2 will further lock this).
+    function canWritePsmData() {
+      return isWorkspaceUser()
+        || (isAllowlisted() && (allowlistRole() == 'tutor' || allowlistRole() == 'admin'));
+    }
+
+    // ── Allowlist collection ──────────────────────────────────────────────
+    // Only allowlist admins can read or write this collection. Workspace
+    // users deliberately cannot — keeping the admin surface tight means the
+    // only way to grant access is via an already-trusted admin (or via
+    // Firebase Console, which bypasses rules for bootstrap).
+    match /allowlist/{email} {
+      allow read, write: if isAllowlistAdmin();
+    }
+
+    // ── Main app data ─────────────────────────────────────────────────────
+    // During Phases B and C both gates apply. Tutors using the existing
+    // workspace sign-in see zero change. Tutors on the allowlist can also
+    // read/write. Student/parent allowlist roles can read but not write;
+    // Phase 2 migrates them off psm-data/main entirely.
+    match /psm-data/main {
+      allow read: if isWorkspaceUser() || isAllowlisted();
+      allow write: if canWritePsmData();
+    }
+
+    // Any other document (legacy fallthrough): workspace users only.
+    // Phase 2 will add explicit /students/{id} rules; until then this keeps
+    // the existing behavior for anything that happens to exist outside
+    // psm-data/main (e.g. ad-hoc admin tooling docs).
+    match /{document=**} {
+      allow read, write: if isWorkspaceUser();
+    }
+
+    // ── Phase 2 scaffolding (do NOT uncomment until the portal ships) ─────
     //
+    // When Phase 2 migrates to per-student docs, replace the match above
+    // with rules roughly like this. The student/parent scope is enforced by
+    // looking up their allowlist entry's studentIds array — consistent with
+    // how the client writes the allowlist, so there's only one source of
+    // truth for who-sees-what.
+    //
+    // function allowlistStudentIds() {
+    //   return get(/databases/$(database)/documents/allowlist/$(emailKey())).data.studentIds;
+    // }
+    // function canReadStudent(studentId) {
+    //   return isWorkspaceUser()
+    //     || (isAllowlisted() && allowlistRole() in ['tutor', 'admin'])
+    //     || (isAllowlisted()
+    //         && allowlistRole() in ['student', 'parent']
+    //         && studentId in allowlistStudentIds());
+    // }
+    // match /students/{studentId} {
+    //   allow read: if canReadStudent(studentId);
+    //   allow write: if canWritePsmData();
     //   match /{sub=**} {
-    //     allow read: if isTutor()
-    //       || (request.auth != null
-    //           && request.auth.token.role in ['student', 'parent']
-    //           && request.auth.token.studentId == studentId);
-    //     allow write: if isTutor();
+    //     allow read: if canReadStudent(studentId);
+    //     allow write: if canWritePsmData();
     //   }
     // }
   }
