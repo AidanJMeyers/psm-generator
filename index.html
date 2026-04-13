@@ -337,6 +337,80 @@ const todayStr=()=>new Date().toISOString().slice(0,10);
 const sLoad=(k,fb)=>{try{const r=localStorage.getItem(k);return r?JSON.parse(r):fb;}catch{return fb;}};
 const sSave=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
 
+/* Soft-delete helpers. Items with a truthy `deleted` flag are in the trash;
+   live() strips them for display, trash() keeps only them for the Trash tab.
+   Raw `students` state always contains both — we filter at display time so
+   mutations (addAsg, setExamScore, etc.) keep working against the full array. */
+const live = arr => (arr||[]).filter(x=>!x.deleted);
+const trashed = arr => (arr||[]).filter(x=>x.deleted);
+const softDel = x => ({...x, deleted:true, deletedAt: Date.now()});
+const softRestore = x => { const {deleted, deletedAt, ...rest} = x; return rest; };
+
+/* CSV parser — RFC 4180-ish, handles quoted fields with embedded commas,
+   embedded newlines, and "" escapes. Returns array of row arrays. */
+function parseCsvText(text){
+  const rows=[]; let row=[]; let cell=""; let q=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(q){
+      if(ch==='"'){ if(text[i+1]==='"'){cell+='"';i++;} else q=false; }
+      else cell+=ch;
+    } else {
+      if(ch==='"') q=true;
+      else if(ch===','){ row.push(cell); cell=""; }
+      else if(ch==='\r'){/*skip*/}
+      else if(ch==='\n'){ row.push(cell); rows.push(row); row=[]; cell=""; }
+      else cell+=ch;
+    }
+  }
+  if(cell.length||row.length){ row.push(cell); rows.push(row); }
+  return rows;
+}
+
+/* Parse a Wise "Learner Report" CSV export into a list of clean student
+   objects. Skips rows before the header ("Table 1" title), handles duplicate
+   "Phone Number" columns, and ignores the accommodations column entirely
+   (PII we explicitly don't want in PSM). */
+function parseWiseCsv(text){
+  const rows = parseCsvText(text);
+  const headerIdx = rows.findIndex(r => r.some(c => (c||"").trim() === "Name"));
+  if(headerIdx < 0) throw new Error('Could not find "Name" column — is this a Wise Learner Report?');
+  const header = rows[headerIdx].map(c => (c||"").trim());
+  const col = n => header.indexOf(n);
+  const idxName = col("Name");
+  const idxPhone1 = col("Phone Number");
+  const idxPhone2 = header.lastIndexOf("Phone Number");
+  const idxEmail = col("Email");
+  const idxJoined = col("Joined On");
+  const idxGrade = col("Grade Level");
+  const idxLevel = col("Level of Tutoring");
+  const idxSubject = col("Specific Subject of Tutoring");
+  const idxGoals = header.findIndex(c => c.toLowerCase().startsWith("what are your outcome goals"));
+  const get = (r,i) => (i>=0 && r[i]!=null) ? String(r[i]).trim() : "";
+  const out = [];
+  for(let i = headerIdx+1; i < rows.length; i++){
+    const r = rows[i];
+    const name = get(r, idxName);
+    if(!name) continue;
+    const phone = get(r, idxPhone1) || (idxPhone2!==idxPhone1 ? get(r, idxPhone2) : "");
+    out.push({
+      name,
+      meta: {
+        email: get(r, idxEmail),
+        phone,
+        joinedOn: get(r, idxJoined),
+        gradeLevel: get(r, idxGrade),
+        levelOfTutoring: get(r, idxLevel),
+        subjectOfTutoring: get(r, idxSubject),
+        goals: get(r, idxGoals),
+        source: "wise",
+        importedAt: Date.now(),
+      },
+    });
+  }
+  return out;
+}
+
 /* ============ WORKSHEET CATALOG ============ */
 const ALL_WS = WS_RAW.map(([subject,domain,subdomain,difficulty,qs,title,stu,key])=>({
   subject,domain,subdomain,difficulty,qs,title,stu,key,
@@ -1009,6 +1083,9 @@ function AppInner({authUser, onSignOut}){
   // Students / profile
   const[profile,setProfile]=useState(null);
   const[showAdd,setShowAdd]=useState(false);
+  // Wise CSV import staging — null = no import in progress, object = preview dialog open.
+  const[wiseImport,setWiseImport]=useState(null);
+  const wiseInputRef=useRef(null);
   const[newS,setNewS]=useState({name:"",grade:"",tutor:"",notes:""});
   const[ptab,setPtab]=useState("history");
   const[paChk,setPaChk]=useState({});
@@ -1121,12 +1198,22 @@ function AppInner({authUser, onSignOut}){
     return t;
   },[selWS,selWeDom,addBB,bbCnt,bbType,addWE,weCnt,weType]);
 
-  const curStudent = students.find(st=>st.id===selSt);
+  // visibleStudents is the deep-filtered view used for all display. Raw `students`
+  // still contains soft-deleted records so the Trash tab can show them and mutations
+  // keep working against the full array.
+  const visibleStudents = useMemo(()=>live(students).map(st=>({
+    ...st,
+    assignments: live(st.assignments),
+    scores: live(st.scores),
+    welledLogs: live(st.welledLogs),
+    diagnostics: live(st.diagnostics),
+  })),[students]);
+  const curStudent = visibleStudents.find(st=>st.id===selSt);
 
   // Heat Map domains (from assignments)
   const heatDoms = useMemo(()=>[...new Set(ALL_WS.map(ws=>ws.domain))],[]);
   const getHV = (st,d)=>(st.assignments||[]).reduce((n,a)=>n+(a.worksheets||[]).filter(w=>w.domain===d).length,0);
-  const heatMax = useMemo(()=>students.reduce((mx,st)=>heatDoms.reduce((m,d)=>Math.max(m,getHV(st,d)),mx),1),[students,heatDoms]);
+  const heatMax = useMemo(()=>visibleStudents.reduce((mx,st)=>heatDoms.reduce((m,d)=>Math.max(m,getHV(st,d)),mx),1),[visibleStudents,heatDoms]);
   const heatC = (v)=>{if(!v)return"#f1f5f9";const i=v/heatMax;return i<.25?"#bfdbfe":i<.5?"#60a5fa":i<.75?"#3b82f6":"#1d4ed8";};
 
   /* ============ GENERATE OUTPUT ============ */
@@ -1428,7 +1515,9 @@ function AppInner({authUser, onSignOut}){
     setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setPaChk({});setPaWeChk({});setPaBBNums("");setPaWENums("");showToast(`${totalItems} item(s) pre-assigned`);
   };
   const addScore=()=>{if(!sfm.testType||!sfm.score)return;const entry={...sfm,id:uid()};const upd=students.map(st=>st.id===profile.id?{...st,scores:[...(st.scores||[]),entry]}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});showToast("Score recorded");};
-  const delScore=(sid)=>{const upd=students.map(st=>st.id===profile.id?{...st,scores:st.scores.filter(sc=>sc.id!==sid)}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));};
+  // Soft-delete — items stay in the array with deleted:true and deletedAt,
+  // filtered out of display via live(). Restore + hard-delete live in the Trash tab.
+  const delScore=(sid)=>{const upd=students.map(st=>st.id===profile.id?{...st,scores:(st.scores||[]).map(sc=>sc.id===sid?softDel(sc):sc)}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));showToast("Score moved to Trash");};
   // Standalone WellEd Domain score logs — continuous tracking per subdomain outside of assignment history
   const addWelledLog=(log)=>{
     const entry = {...log,id:uid()};
@@ -1437,11 +1526,40 @@ function AppInner({authUser, onSignOut}){
     showToast("WellEd domain score logged");
   };
   const delWelledLog=(lid)=>{
-    const upd = students.map(st=>st.id===profile.id?{...st,welledLogs:(st.welledLogs||[]).filter(l=>l.id!==lid)}:st);
+    const upd = students.map(st=>st.id===profile.id?{...st,welledLogs:(st.welledLogs||[]).map(l=>l.id===lid?softDel(l):l)}:st);
     setStudents(upd); setProfile(upd.find(st=>st.id===profile.id));
+    showToast("Log moved to Trash");
   };
-  const delAsg=(aid)=>{const upd=students.map(st=>st.id===profile.id?{...st,assignments:st.assignments.filter(a=>a.id!==aid)}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));};
-  const delStudent=(id)=>{if(!confirm("Delete this student and all their data?"))return;setStudents(prev=>prev.filter(st=>st.id!==id));if(profile?.id===id)setProfile(null);};
+  const delAsg=(aid)=>{const upd=students.map(st=>st.id===profile.id?{...st,assignments:(st.assignments||[]).map(a=>a.id===aid?softDel(a):a)}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));showToast("Assignment moved to Trash");};
+  const delStudent=(id)=>{
+    if(!confirm("Move this student to Trash? You can restore them later from the Trash tab.")) return;
+    setStudents(prev=>prev.map(st=>st.id===id?softDel(st):st));
+    if(profile?.id===id) setProfile(null);
+    showToast("Student moved to Trash");
+  };
+
+  // Restore / hard-delete operations used by the Trash tab.
+  const restoreStudent=(id)=>setStudents(prev=>prev.map(st=>st.id===id?softRestore(st):st));
+  const purgeStudent=(id)=>{
+    if(!confirm("Delete this student forever? This cannot be undone.")) return;
+    setStudents(prev=>prev.filter(st=>st.id!==id));
+  };
+  const restoreSubItem=(stId,key,itemId)=>setStudents(prev=>prev.map(st=>st.id===stId?{...st,[key]:(st[key]||[]).map(x=>x.id===itemId?softRestore(x):x)}:st));
+  const purgeSubItem=(stId,key,itemId)=>{
+    if(!confirm("Delete forever? This cannot be undone.")) return;
+    setStudents(prev=>prev.map(st=>st.id===stId?{...st,[key]:(st[key]||[]).filter(x=>x.id!==itemId)}:st));
+  };
+  const emptyTrash=()=>{
+    if(!confirm("Permanently delete every item in Trash? This cannot be undone.")) return;
+    setStudents(prev=>prev.filter(st=>!st.deleted).map(st=>({
+      ...st,
+      assignments: (st.assignments||[]).filter(a=>!a.deleted),
+      scores: (st.scores||[]).filter(x=>!x.deleted),
+      welledLogs: (st.welledLogs||[]).filter(x=>!x.deleted),
+      diagnostics: (st.diagnostics||[]).filter(x=>!x.deleted),
+    })));
+    showToast("Trash emptied");
+  };
 
   // Update a practice exam in assignment history — accepts a patch object
   const setExamScore = (aid,examIdx,patch)=>{
@@ -1485,6 +1603,50 @@ function AppInner({authUser, onSignOut}){
     e.target.value="";
   };
 
+  // Wise Learner Report CSV import — additive, with preview + dedupe.
+  const handleWiseFile=(e)=>{
+    const f=e.target.files?.[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const parsed = parseWiseCsv(String(r.result||""));
+        if(!parsed.length){ alert("No students found in this file."); return; }
+        const existingNames = new Set(students.filter(s=>!s.deleted).map(s=>s.name.trim().toLowerCase()));
+        const rows = parsed.map(p=>({
+          ...p,
+          duplicate: existingNames.has(p.name.trim().toLowerCase()),
+          selected: !existingNames.has(p.name.trim().toLowerCase()),
+        }));
+        setWiseImport({fileName: f.name, rows});
+      }catch(err){
+        console.error("[Wise import]", err);
+        alert("Failed to parse: "+(err.message||err));
+      }
+    };
+    r.readAsText(f);
+    e.target.value="";
+  };
+  const toggleWiseRow=(i)=>setWiseImport(w=>w?{...w, rows: w.rows.map((r,idx)=>idx===i?{...r,selected:!r.selected}:r)}:w);
+  const setWiseAll=(sel,onlyNew)=>setWiseImport(w=>w?{...w, rows: w.rows.map(r=>({...r, selected: onlyNew ? (sel && !r.duplicate) : sel}))}:w);
+  const cancelWiseImport=()=>setWiseImport(null);
+  const confirmWiseImport=()=>{
+    if(!wiseImport) return;
+    const picked = wiseImport.rows.filter(r=>r.selected);
+    if(!picked.length){ cancelWiseImport(); return; }
+    const newStudents = picked.map(p=>({
+      id: uid(),
+      name: p.name,
+      meta: p.meta,
+      assignments: [],
+      scores: [],
+      welledLogs: [],
+      diagnostics: [],
+    }));
+    setStudents(prev=>[...prev, ...newStudents]);
+    showToast(`Imported ${newStudents.length} student${newStudents.length!==1?"s":""} from Wise`);
+    setWiseImport(null);
+  };
+
   /* ============ DIAGNOSTIC UPLOAD ============ */
   const handleDiagUpload = async(files)=>{
     if(!files||!files.length) return;
@@ -1501,10 +1663,11 @@ function AppInner({authUser, onSignOut}){
         }
       }
       if(results.length){
+        const stamped = results.map(r=>({id:uid(),...r}));
         const upd = students.map(st=>{
           if(st.id!==profile.id) return st;
           const existing = st.diagnostics||[];
-          return {...st, diagnostics:[...existing, ...results]};
+          return {...st, diagnostics:[...existing, ...stamped]};
         });
         setStudents(upd);
         setProfile(upd.find(st=>st.id===profile.id));
@@ -1513,9 +1676,14 @@ function AppInner({authUser, onSignOut}){
     } finally { setParsing(false); }
   };
   const clearDiagnostics=()=>{
-    if(!confirm("Clear all diagnostic data for this student?")) return;
-    const upd = students.map(st=>st.id===profile.id?{...st,diagnostics:[]}:st);
+    if(!confirm("Move all diagnostic data for this student to Trash? You can restore them individually.")) return;
+    const upd = students.map(st=>{
+      if(st.id!==profile.id) return st;
+      const diags = (st.diagnostics||[]).map(d=>d.deleted?d:softDel({id:d.id||uid(),...d}));
+      return {...st, diagnostics: diags};
+    });
     setStudents(upd); setProfile(upd.find(st=>st.id===profile.id));
+    showToast("Diagnostics moved to Trash");
   };
 
   /* ============ WELLED REPORT UPLOAD ============ */
@@ -1550,8 +1718,24 @@ function AppInner({authUser, onSignOut}){
     } finally { setParsing(false); }
   };
 
-  const p = profile && (students.find(st=>st.id===profile.id)||profile);
+  // p is looked up from visibleStudents so its sub-items are already filtered.
+  // If the underlying student was soft-deleted since the profile opened we fall
+  // back to the raw record (rare — delStudent closes the profile itself).
+  const p = profile && (visibleStudents.find(st=>st.id===profile.id) || students.find(st=>st.id===profile.id) || profile);
   const diagProfile = useMemo(()=>p?.diagnostics?.length?buildDiagnosticProfile(p.diagnostics):null,[p]);
+
+  // Counts for the Trash tab badge.
+  const trashCount = useMemo(()=>{
+    let n = 0;
+    for(const st of students){
+      if(st.deleted) n++;
+      n += trashed(st.assignments).length;
+      n += trashed(st.scores).length;
+      n += trashed(st.welledLogs).length;
+      n += trashed(st.diagnostics).length;
+    }
+    return n;
+  },[students]);
 
   // Check whether a given worksheet was already assigned, and find the latest date
   const lastAssignedDate = (stud, wsId)=>{
@@ -1573,6 +1757,71 @@ function AppInner({authUser, onSignOut}){
       {toast&&<div style={{position:"fixed",top:16,right:16,background:"#1e293b",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,.25)"}}>{toast}</div>}
       {parsing&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#4338ca",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999}} className="pl">Parsing diagnostic PDF(s)...</div>}
 
+      {wiseImport && (()=>{
+        const newCount = wiseImport.rows.filter(r=>!r.duplicate).length;
+        const dupCount = wiseImport.rows.filter(r=>r.duplicate).length;
+        const selCount = wiseImport.rows.filter(r=>r.selected).length;
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(15,26,46,.55)",zIndex:10000,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px"}} onClick={cancelWiseImport}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"var(--card)",border:"1px solid var(--rule)",borderRadius:14,boxShadow:"var(--shadow-lg)",maxWidth:1000,width:"100%",maxHeight:"88vh",display:"flex",flexDirection:"column",overflow:"hidden",position:"relative"}}>
+              <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:"linear-gradient(90deg,var(--brand) 0,var(--brand) 72px,transparent 72px)"}}/>
+              <div style={{padding:"28px 32px 20px",borderBottom:"1px solid var(--rule)"}}>
+                <div style={{fontFamily:"var(--font-body)",fontSize:10,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:"var(--ink-mute)",marginBottom:6}}>Wise · Learner Report</div>
+                <h2 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 144, 'SOFT' 20",fontWeight:600,fontSize:26,letterSpacing:"-0.02em",margin:"0 0 10px",lineHeight:1.1}}>Import {newCount} new student{newCount!==1?"s":""}</h2>
+                <div style={{fontSize:13,color:"var(--ink-soft)",lineHeight:1.55,maxWidth:680}}>
+                  Parsed <span style={{fontFamily:"var(--font-mono)",fontSize:12.5,color:"var(--ink)"}}>{wiseImport.fileName}</span> — found <strong>{wiseImport.rows.length}</strong> rows, <strong>{newCount}</strong> new, <strong>{dupCount}</strong> already in PSM. Addresses, hourly rates, and accommodations are intentionally not imported.
+                </div>
+                <div style={{marginTop:14,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  <button onClick={()=>setWiseAll(true,true)} style={{...mkBtn("transparent","var(--brand)"),border:"1px solid rgba(0,74,121,.35)",padding:"5px 12px",fontSize:11}}>Select all new</button>
+                  <button onClick={()=>setWiseAll(true,false)} style={{...mkBtn("transparent","var(--ink-soft)"),border:"1px solid var(--rule)",padding:"5px 12px",fontSize:11}}>Select all</button>
+                  <button onClick={()=>setWiseAll(false,false)} style={{...mkBtn("transparent","var(--ink-soft)"),border:"1px solid var(--rule)",padding:"5px 12px",fontSize:11}}>Clear</button>
+                  <div style={{marginLeft:"auto",fontFamily:"var(--font-mono)",fontSize:10,color:"var(--ink-mute)",letterSpacing:"0.04em",textTransform:"uppercase"}}>{selCount} selected</div>
+                </div>
+              </div>
+              <div style={{flex:1,overflowY:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead style={{position:"sticky",top:0,background:"var(--paper-alt)",zIndex:1}}>
+                    <tr style={{borderBottom:"1px solid var(--rule)"}}>
+                      {["","Name","Email","Phone","Grade","Level","Subject","Status"].map((h,i)=>(
+                        <th key={i} style={{padding:"12px 14px",textAlign:"left",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wiseImport.rows.map((r,i)=>(
+                      <tr key={i} style={{borderBottom:i===wiseImport.rows.length-1?"none":"1px solid rgba(15,26,46,.06)",background:r.duplicate?"rgba(154,91,31,.04)":"transparent",opacity:r.selected?1:0.55}}>
+                        <td style={{padding:"10px 14px",width:34}}>
+                          <input type="checkbox" checked={r.selected} onChange={()=>toggleWiseRow(i)}/>
+                        </td>
+                        <td style={{padding:"10px 14px",fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 48",fontSize:13,fontWeight:500,color:"var(--ink)"}}>{r.name}</td>
+                        <td style={{padding:"10px 14px",fontFamily:"var(--font-mono)",fontSize:11,color:"var(--ink-soft)"}}>{r.meta.email||"—"}</td>
+                        <td style={{padding:"10px 14px",fontFamily:"var(--font-mono)",fontSize:11,color:"var(--ink-soft)"}}>{r.meta.phone||"—"}</td>
+                        <td style={{padding:"10px 14px",color:"var(--ink-soft)"}}>{r.meta.gradeLevel||"—"}</td>
+                        <td style={{padding:"10px 14px",color:"var(--ink-soft)"}}>{r.meta.levelOfTutoring||"—"}</td>
+                        <td style={{padding:"10px 14px",color:"var(--ink-soft)"}}>{r.meta.subjectOfTutoring||"—"}</td>
+                        <td style={{padding:"10px 14px",whiteSpace:"nowrap"}}>
+                          {r.duplicate ? (
+                            <span style={{display:"inline-block",padding:"2px 9px",borderRadius:999,border:"1px solid rgba(154,91,31,.35)",color:"var(--accent)",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase"}}>Already in PSM</span>
+                          ) : (
+                            <span style={{display:"inline-block",padding:"2px 9px",borderRadius:999,border:"1px solid rgba(0,74,121,.35)",color:"var(--brand)",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase"}}>New</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{padding:"18px 32px",borderTop:"1px solid var(--rule)",display:"flex",justifyContent:"flex-end",gap:10,background:"var(--paper-alt)"}}>
+                <button onClick={cancelWiseImport} style={{...mkBtn("transparent","var(--ink-soft)"),border:"1px solid var(--rule)",padding:"9px 18px",fontSize:12}}>Cancel</button>
+                <button onClick={confirmWiseImport} disabled={selCount===0} style={{...mkBtn(selCount===0?"var(--paper-alt)":"var(--brand)",selCount===0?"var(--ink-mute)":"var(--paper)"),border:`1px solid ${selCount===0?"var(--rule)":"var(--brand)"}`,padding:"9px 20px",fontSize:12,fontWeight:500,cursor:selCount===0?"default":"pointer"}}>
+                  Import {selCount} student{selCount!==1?"s":""}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* HEADER — editorial wordmark + refined action rail */}
       <div data-psm-header style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",flexShrink:0,gap:24}}>
         <div data-psm-brand style={{display:"flex",alignItems:"center",gap:16}}>
@@ -1590,8 +1839,8 @@ function AppInner({authUser, onSignOut}){
           </div>
           <a href="https://tutor.thesatcrashcourse.com/" target="_blank" rel="noopener noreferrer">WellEd</a>
           <a href="https://ats.wise.live/get-started" target="_blank" rel="noopener noreferrer">Wise</a>
-          <span data-psm-chip title="Enrolled students" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{students.length.toString().padStart(2,"0")} students</span>
-          <span data-psm-chip title="Total assigned worksheets" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{students.reduce((n,st)=>n+(st.assignments||[]).reduce((m,a)=>m+(a.worksheets||[]).length,0),0)} assigned</span>
+          <span data-psm-chip title="Enrolled students" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{visibleStudents.length.toString().padStart(2,"0")} students</span>
+          <span data-psm-chip title="Total assigned worksheets" style={{padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:"var(--ink-soft)"}}>{visibleStudents.reduce((n,st)=>n+(st.assignments||[]).reduce((m,a)=>m+(a.worksheets||[]).length,0),0)} assigned</span>
           <span data-psm-chip title={cloudStatus==="synced"?"Cloud synced — all tutors see changes in real-time":cloudStatus==="connecting"?"Connecting to cloud...":"Offline — changes saved locally"} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"6px 10px",border:"1px solid var(--rule)",borderRadius:999,color:cloudStatus==="synced"?"var(--ok)":cloudStatus==="connecting"?"var(--warn)":"var(--danger)"}}>
             <span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>
             {cloudStatus==="synced"?"Synced":cloudStatus==="connecting"?"Syncing":"Offline"}
@@ -1600,6 +1849,10 @@ function AppInner({authUser, onSignOut}){
           <label title="Import data" style={{cursor:"pointer"}}>
             Import
             <input type="file" accept="application/json" onChange={importData} style={{display:"none"}}/>
+          </label>
+          <label title="Import students from a Wise Learner Report CSV" style={{cursor:"pointer"}}>
+            Import Wise
+            <input ref={wiseInputRef} type="file" accept=".csv,text/csv" onClick={e=>{e.currentTarget.value="";}} onChange={handleWiseFile} style={{display:"none"}}/>
           </label>
           <div data-psm-user title={authUser.email} style={{
             display:"inline-flex",alignItems:"center",gap:8,
@@ -1639,9 +1892,10 @@ function AppInner({authUser, onSignOut}){
 
       {/* TABS — editorial nav with serif labels */}
       <div data-psm-tabs style={{display:"flex",flexShrink:0}}>
-        {[{id:"generator",label:"Generator"},{id:"students",label:"Students"},{id:"heatmap",label:"Heat Map"},{id:"scores",label:"Score Tracking"}].map(t=>(
-          <button key={t.id} data-active={tab===t.id} onClick={()=>{if(t.id!=="students")setProfile(null);setTab(t.id);}} style={{border:"none",background:"none",cursor:"pointer"}}>
+        {[{id:"generator",label:"Generator"},{id:"students",label:"Students"},{id:"heatmap",label:"Heat Map"},{id:"scores",label:"Score Tracking"},{id:"trash",label:"Trash"}].map(t=>(
+          <button key={t.id} data-active={tab===t.id} onClick={()=>{if(t.id!=="students")setProfile(null);setTab(t.id);}} style={{border:"none",background:"none",cursor:"pointer",position:"relative"}}>
             {t.label}
+            {t.id==="trash"&&trashCount>0&&<span style={{marginLeft:8,padding:"1px 7px",borderRadius:999,background:"var(--accent-soft)",color:"var(--accent)",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,verticalAlign:"middle"}}>{trashCount}</span>}
           </button>
         ))}
       </div>
@@ -1649,7 +1903,7 @@ function AppInner({authUser, onSignOut}){
       {/* BODY */}
       <div data-psm-body style={{flex:1,overflowY:"auto"}}>
         {tab==="generator"&&<GeneratorTab {...{
-          students,curStudent,selSt,setSelSt,openProfile,
+          students:visibleStudents,curStudent,selSt,setSelSt,openProfile,
           subjF,setSubjF,domF,setDomF,sdomF,setSdomF,diffF,setDiffF,srch,setSrch,
           availDoms,availSdoms,grouped,
           chk,setChk,evenOdd,setEvenOdd,weChk,setWeChk,vocabChk,setVocabChk,
@@ -1663,7 +1917,7 @@ function AppInner({authUser, onSignOut}){
           customAssignments,setCustomAssignments,showToast,
         }}/>}
 
-        {tab==="students"&&!profile&&<StudentsList {...{students,showAdd,setShowAdd,newS,setNewS,addStudent,openProfile,delStudent}}/>}
+        {tab==="students"&&!profile&&<StudentsList {...{students:visibleStudents,showAdd,setShowAdd,newS,setNewS,addStudent,openProfile,delStudent}}/>}
 
         {tab==="students"&&profile&&p&&<StudentProfile {...{p,setProfile,ptab,setPtab,
           paChk,setPaChk,paSubj,setPaSubj,paSrch,setPaSrch,savePreAssign,
@@ -1676,9 +1930,11 @@ function AppInner({authUser, onSignOut}){
           customAssignments,setCustomAssignments,
         }}/>}
 
-        {tab==="heatmap"&&<HeatMapTab {...{students,openProfile}}/>}
+        {tab==="heatmap"&&<HeatMapTab {...{students:visibleStudents,openProfile}}/>}
 
-        {tab==="scores"&&<ScoresTab {...{students,openProfile}}/>}
+        {tab==="scores"&&<ScoresTab {...{students:visibleStudents,openProfile}}/>}
+
+        {tab==="trash"&&<TrashTab {...{students,restoreStudent,purgeStudent,restoreSubItem,purgeSubItem,emptyTrash,trashCount}}/>}
       </div>
 
       <div style={{background:B1,color:"#64748b",padding:"10px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:11,flexShrink:0}}>
@@ -2341,7 +2597,7 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
                       {editDateId===asg.id ? (
                         <span style={{display:"flex",alignItems:"center",gap:6}}>
                           <input type="date" value={editDateVal} onChange={e=>setEditDateVal(e.target.value)} style={{...INP,width:150,fontSize:12,padding:"4px 8px"}}/>
-                          <button onClick={()=>{const upd=students.map(st=>st.id===p.id?{...st,assignments:st.assignments.map(a=>a.id===asg.id?{...a,date:editDateVal}:a)}:st);setStudents(upd);setProfile(upd.find(st=>st.id===p.id));setEditDateId(null);showToast("Date updated");}} style={{...mkBtn("#4C7A4C","#FAF7F2"),padding:"4px 12px",fontSize:10}}>Save</button>
+                          <button onClick={()=>{setStudents(prev=>prev.map(st=>st.id===p.id?{...st,assignments:(st.assignments||[]).map(a=>a.id===asg.id?{...a,date:editDateVal}:a)}:st));setEditDateId(null);showToast("Date updated");}} style={{...mkBtn("#4C7A4C","#FAF7F2"),padding:"4px 12px",fontSize:10}}>Save</button>
                           <button onClick={()=>setEditDateId(null)} style={{...mkBtn("transparent","#66708A"),border:"1px solid rgba(15,26,46,.18)",padding:"4px 12px",fontSize:10}}>Cancel</button>
                         </span>
                       ) : (
@@ -3334,6 +3590,132 @@ function ScoresTab({students,openProfile}){
           </div>
         )}
       </>)}
+    </div>
+  );
+}
+
+/* ============ TRASH TAB ============ */
+function TrashTab({students,restoreStudent,purgeStudent,restoreSubItem,purgeSubItem,emptyTrash,trashCount}){
+  // Flatten every deleted thing into a single timeline sorted by deletedAt desc.
+  const rows = useMemo(()=>{
+    const out = [];
+    const fmt = (ts)=> ts ? new Date(ts).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
+    for(const st of students){
+      if(st.deleted){
+        out.push({
+          kind:"student", id:st.id, parentId:null, deletedAt:st.deletedAt||0,
+          label: st.name || "(unnamed student)",
+          detail: `${(st.assignments||[]).length} assignments · ${(st.scores||[]).length} scores`,
+          restore: ()=>restoreStudent(st.id),
+          purge: ()=>purgeStudent(st.id),
+        });
+      }
+      // Sub-items only surface under LIVE students. If the parent student is
+      // itself deleted, restoring the student brings them back whole.
+      if(!st.deleted){
+        for(const a of trashed(st.assignments)){
+          out.push({
+            kind:"assignment", id:a.id, parentId:st.id, deletedAt:a.deletedAt||0,
+            label: `${st.name} — Assignment ${a.date||""}`.trim(),
+            detail: `${(a.worksheets||[]).length} worksheet${(a.worksheets||[]).length!==1?"s":""}`,
+            restore: ()=>restoreSubItem(st.id,"assignments",a.id),
+            purge: ()=>purgeSubItem(st.id,"assignments",a.id),
+          });
+        }
+        for(const sc of trashed(st.scores)){
+          out.push({
+            kind:"score", id:sc.id, parentId:st.id, deletedAt:sc.deletedAt||0,
+            label: `${st.name} — ${sc.testType||"Score"}`,
+            detail: `${sc.score||"—"}${sc.maxScore?` / ${sc.maxScore}`:""} · ${sc.date||""}`,
+            restore: ()=>restoreSubItem(st.id,"scores",sc.id),
+            purge: ()=>purgeSubItem(st.id,"scores",sc.id),
+          });
+        }
+        for(const lg of trashed(st.welledLogs)){
+          out.push({
+            kind:"welledLog", id:lg.id, parentId:st.id, deletedAt:lg.deletedAt||0,
+            label: `${st.name} — WellEd ${lg.domain||lg.subdomain||""}`,
+            detail: `${lg.score||"—"} · ${lg.date||""}`,
+            restore: ()=>restoreSubItem(st.id,"welledLogs",lg.id),
+            purge: ()=>purgeSubItem(st.id,"welledLogs",lg.id),
+          });
+        }
+        for(const d of trashed(st.diagnostics)){
+          out.push({
+            kind:"diagnostic", id:d.id, parentId:st.id, deletedAt:d.deletedAt||0,
+            label: `${st.name} — Diagnostic`,
+            detail: d.testName || d.dateTaken || "—",
+            restore: ()=>restoreSubItem(st.id,"diagnostics",d.id),
+            purge: ()=>purgeSubItem(st.id,"diagnostics",d.id),
+          });
+        }
+      }
+    }
+    out.sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+    return out.map(r=>({...r, deletedAtLabel: fmt(r.deletedAt)}));
+  },[students,restoreStudent,purgeStudent,restoreSubItem,purgeSubItem]);
+
+  const kindLabel = {student:"Student",assignment:"Assignment",score:"Score",welledLog:"WellEd Log",diagnostic:"Diagnostic"};
+  const kindAccent = {student:"var(--brand)",assignment:"var(--ink-soft)",score:"var(--ok)",welledLog:"var(--accent)",diagnostic:"var(--brand-light)"};
+
+  return (
+    <div style={{maxWidth:1100,margin:"0 auto"}}>
+      <div style={{marginBottom:22,display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontFamily:"var(--font-body)",fontSize:10,fontWeight:600,letterSpacing:"0.18em",textTransform:"uppercase",color:"var(--ink-mute)",marginBottom:6}}>Recoverable</div>
+          <h1 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 144, 'SOFT' 20",fontWeight:600,fontSize:32,letterSpacing:"-0.02em",margin:0,lineHeight:1.05}}>Trash</h1>
+          <div style={{marginTop:8,fontSize:13,color:"var(--ink-soft)",maxWidth:560,lineHeight:1.55}}>
+            Deleted students, assignments, scores, logs, and diagnostics live here until you restore or permanently delete them. Nothing in this list has been removed from Firestore.
+          </div>
+        </div>
+        {rows.length>0 && (
+          <button onClick={emptyTrash} style={{
+            ...mkBtn("transparent","#8C2E2E"),
+            border:"1px solid rgba(140,46,46,.35)",
+            padding:"9px 18px",fontSize:11,letterSpacing:"0.04em",textTransform:"uppercase",fontWeight:600
+          }}>Empty Trash</button>
+        )}
+      </div>
+
+      {rows.length===0 ? (
+        <div style={{...CARD,padding:"72px 40px",textAlign:"center"}}>
+          <div style={{fontFamily:"var(--font-display)",fontStyle:"italic",fontSize:22,color:"var(--ink-mute)",letterSpacing:"-0.01em",marginBottom:8}}>Trash is empty.</div>
+          <div style={{fontSize:12,color:"var(--ink-mute)"}}>Deleted items appear here and can be restored with one click.</div>
+        </div>
+      ) : (
+        <div style={{...CARD,padding:0,overflow:"hidden"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead>
+              <tr style={{background:"var(--paper-alt)",borderBottom:"1px solid var(--rule)"}}>
+                <th style={{padding:"12px 16px",textAlign:"left",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Type</th>
+                <th style={{padding:"12px 16px",textAlign:"left",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Item</th>
+                <th style={{padding:"12px 16px",textAlign:"left",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Deleted</th>
+                <th style={{padding:"12px 16px",textAlign:"right",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase"}}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r,i)=>(
+                <tr key={`${r.kind}-${r.id}-${r.parentId||""}`} style={{borderBottom:i===rows.length-1?"none":"1px solid rgba(15,26,46,.06)"}}>
+                  <td style={{padding:"14px 16px",whiteSpace:"nowrap"}}>
+                    <span style={{display:"inline-block",padding:"3px 10px",borderRadius:999,border:`1px solid ${kindAccent[r.kind]}`,color:kindAccent[r.kind],fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase"}}>{kindLabel[r.kind]}</span>
+                  </td>
+                  <td style={{padding:"14px 16px"}}>
+                    <div style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 48",fontSize:14,fontWeight:500,color:"var(--ink)"}}>{r.label}</div>
+                    {r.detail&&<div style={{fontSize:11,color:"var(--ink-mute)",marginTop:2}}>{r.detail}</div>}
+                  </td>
+                  <td style={{padding:"14px 16px",fontFamily:"var(--font-mono)",fontSize:11,color:"var(--ink-soft)",whiteSpace:"nowrap"}}>{r.deletedAtLabel}</td>
+                  <td style={{padding:"14px 16px",textAlign:"right",whiteSpace:"nowrap"}}>
+                    <div style={{display:"inline-flex",gap:6}}>
+                      <button onClick={r.restore} style={{...mkBtn("transparent","#004A79"),border:"1px solid rgba(0,74,121,.35)",padding:"5px 12px",fontSize:11}}>Restore</button>
+                      <button onClick={r.purge} title="Delete forever" style={{...mkBtn("transparent","#8C2E2E"),border:"1px solid rgba(140,46,46,.3)",padding:"5px 10px",fontSize:11}}>✕</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
