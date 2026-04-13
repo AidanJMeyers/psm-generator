@@ -1581,33 +1581,37 @@ function StudentSummaryCard({student}){
     return ap-bp;
   }).slice(0,6);
 
+  const eyebrow = {fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,color:"#66708A",textTransform:"uppercase",letterSpacing:1.2,marginBottom:8};
+  const hairline = {marginTop:14,paddingTop:14,borderTop:"1px solid rgba(15,26,46,.08)"};
+
   return(
-    <div style={{...CARD,padding:14,background:"#fafbfc",border:"1.5px solid #dbeafe"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-        <div style={{width:34,height:34,borderRadius:9,background:B2,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:15}}>{student.name.charAt(0).toUpperCase()}</div>
+    <div style={{...CARD,padding:18,background:"#fff"}}>
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,paddingBottom:14,borderBottom:"1px solid rgba(15,26,46,.08)"}}>
+        <div style={{width:44,height:44,borderRadius:4,background:B2,color:"#FAF7F2",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontWeight:600,fontSize:20,flexShrink:0,boxShadow:"0 2px 8px -4px rgba(0,74,121,.5)"}}>{student.name.charAt(0).toUpperCase()}</div>
         <div>
-          <div style={{fontSize:15,fontWeight:800,color:B2}}>{student.name}</div>
-          <div style={{fontSize:10,color:"#64748b"}}>Quick reference while assigning</div>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:20,fontWeight:600,color:"#0F1A2E",letterSpacing:-.3,lineHeight:1.1}}>{student.name}</div>
+          <div style={{fontSize:10,color:"#66708A",fontStyle:"italic",marginTop:2}}>Quick reference while assigning</div>
         </div>
-        <div style={{marginLeft:"auto",display:"flex",gap:6,flexWrap:"wrap"}}>
-          {diagProfile?.totalLower!=null && <Tag c="#fdf2f8" t="#be185d">Diagnostic: {diagProfile.totalLower}–{diagProfile.totalUpper}</Tag>}
-          {latestPractice && <Tag c="#eff6ff" t="#1e40af">Last Exam: {latestPractice.score}</Tag>}
-          <Tag c="#f1f5f9" t="#475569">{allAsg.length} session{allAsg.length!==1?"s":""}</Tag>
+        <div style={{marginLeft:"auto",display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {diagProfile?.totalLower!=null && <span style={{...mkPill("transparent","#8C2E2E"),border:"1px solid rgba(140,46,46,.3)"}}>Diag {diagProfile.totalLower}–{diagProfile.totalUpper}</span>}
+          {latestPractice && <span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.28)"}}>Last {latestPractice.score}</span>}
+          <span style={{...mkPill("transparent","#2E3A57"),border:"1px solid rgba(15,26,46,.18)"}}>{allAsg.length} session{allAsg.length!==1?"s":""}</span>
         </div>
       </div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
         {/* Left: mini heat map (worksheets+WellEd) */}
         <div>
-          <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>Coverage (worksheets + WellEd)</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3}}>
+          <div style={eyebrow}>Coverage · Worksheets + WellEd</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
             {ALL_DOMAINS.map(d=>{
               const total = DIFFS.reduce((n,diff)=>n+(counts[`${d}|${diff}`]||0),0);
               const short = d.replace(/Problem-Solving & Data Analysis/,"PSDA").replace(/Standard English Conventions/,"SEC").replace(/Information & Ideas/,"Info").replace(/Craft & Structure/,"C&S").replace(/Expression of Ideas/,"EOI").replace(/Advanced Math/,"Adv Math").replace(/Geometry & Trigonometry/,"Geo");
+              const hot = total>=3;
               return(
-                <div key={d} title={`${d}: ${total}`} style={{background:heatCellColor(total),borderRadius:5,padding:"4px 3px",textAlign:"center"}}>
-                  <div style={{fontSize:8,color:total>=3?"#fff":"#475569",fontWeight:700,lineHeight:1}}>{short}</div>
-                  <div style={{fontSize:14,fontWeight:900,color:total>=3?"#fff":total>0?"#1e3a5f":"#cbd5e1"}}>{total||"·"}</div>
+                <div key={d} title={`${d}: ${total}`} style={{background:heatCellColor(total),borderRadius:3,padding:"6px 4px",textAlign:"center",border:"1px solid "+(total>0?"transparent":"rgba(15,26,46,.08)")}}>
+                  <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:8,color:hot?"#FAF7F2":"#66708A",fontWeight:500,lineHeight:1,letterSpacing:.3}}>{short}</div>
+                  <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:16,fontWeight:600,color:hot?"#FAF7F2":total>0?"#0F1A2E":"rgba(15,26,46,.25)",marginTop:2}}>{total||"·"}</div>
                 </div>
               );
             })}
@@ -1615,37 +1619,37 @@ function StudentSummaryCard({student}){
         </div>
         {/* Right: diagnostic weakest areas */}
         <div>
-          <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>Diagnostic — Weakest Areas</div>
+          <div style={eyebrow}>Diagnostic · Weakest Areas</div>
           {diagProfile?.subs?.length ? (
-            <div style={{display:"flex",flexDirection:"column",gap:2}}>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
               {[...diagProfile.subs].sort((a,b)=>(a.pct||0)-(b.pct||0)).slice(0,4).map(s=>(
-                <div key={s.domain+s.name} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
-                  <div style={{width:34,height:16,background:heatColorPct(s.pct),color:"#fff",borderRadius:3,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{s.pct}%</div>
-                  <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</div>
+                <div key={s.domain+s.name} style={{display:"flex",alignItems:"center",gap:8,fontSize:10}}>
+                  <div style={{width:38,height:18,background:heatColorPct(s.pct),color:"#FAF7F2",borderRadius:2,fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,letterSpacing:.2}}>{s.pct}%</div>
+                  <div style={{flex:1,color:"#2E3A57",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</div>
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No diagnostic uploaded yet</div>
+            <div style={{fontSize:10,color:"#66708A",fontStyle:"italic"}}>No diagnostic uploaded yet</div>
           )}
         </div>
       </div>
 
       {/* Recent score breakdown by domain/subdomain */}
-      {(domainRows.length>0 || subRows.length>0) && <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #cbd5e1"}}>
-        <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Recent Score Breakdown (latest per area)</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      {(domainRows.length>0 || subRows.length>0) && <div style={hairline}>
+        <div style={eyebrow}>Recent Score Breakdown · latest per area</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
           <div>
-            <div style={{fontSize:9,fontWeight:700,color:"#64748b",marginBottom:3}}>By Domain</div>
-            {domainRows.length===0 ? <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No domain scores yet</div> : (
-              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:10,fontStyle:"italic",color:"#66708A",marginBottom:6}}>By Domain</div>
+            {domainRows.length===0 ? <div style={{fontSize:10,color:"#66708A",fontStyle:"italic"}}>No domain scores yet</div> : (
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
                 {domainRows.slice(0,6).map(pt=>{
                   const pct = pt.max?Math.round((pt.score/pt.max)*100):(pt.pct||0);
                   const label = pt.subcategory.replace(/^(Math|Reading & Writing) — /,"").replace(/\s*\(easy\)/i," (E)").replace(/\s*\(medium\)/i," (M)").replace(/\s*\(hard\)/i," (H)").replace(/\s*\(comprehensive\)/i," (C)");
                   return(
-                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
-                      <div style={{width:34,height:16,background:heatColorPct(pct),color:"#fff",borderRadius:3,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{pct}%</div>
-                      <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{label}</div>
+                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:8,fontSize:10}}>
+                      <div style={{width:38,height:18,background:heatColorPct(pct),color:"#FAF7F2",borderRadius:2,fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,letterSpacing:.2}}>{pct}%</div>
+                      <div style={{flex:1,color:"#2E3A57",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{label}</div>
                     </div>
                   );
                 })}
@@ -1653,16 +1657,16 @@ function StudentSummaryCard({student}){
             )}
           </div>
           <div>
-            <div style={{fontSize:9,fontWeight:700,color:"#64748b",marginBottom:3}}>Weakest Subskills</div>
-            {subRows.length===0 ? <div style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>No subskill scores yet</div> : (
-              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+            <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:10,fontStyle:"italic",color:"#66708A",marginBottom:6}}>Weakest Subskills</div>
+            {subRows.length===0 ? <div style={{fontSize:10,color:"#66708A",fontStyle:"italic"}}>No subskill scores yet</div> : (
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
                 {subRows.map(pt=>{
                   const pct = pt.max?Math.round((pt.score/pt.max)*100):(pt.pct||0);
                   const name = pt.subcategory.split(" — ").pop();
                   return(
-                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
-                      <div style={{width:34,height:16,background:heatColorPct(pct),color:"#fff",borderRadius:3,fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{pct}%</div>
-                      <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{name}</div>
+                    <div key={pt.subcategory} style={{display:"flex",alignItems:"center",gap:8,fontSize:10}}>
+                      <div style={{width:38,height:18,background:heatColorPct(pct),color:"#FAF7F2",borderRadius:2,fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,letterSpacing:.2}}>{pct}%</div>
+                      <div style={{flex:1,color:"#2E3A57",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${pt.subcategory} · ${pt.score}${pt.max?"/"+pt.max:""} · ${pt.date||""}`}>{name}</div>
                     </div>
                   );
                 })}
@@ -1673,18 +1677,18 @@ function StudentSummaryCard({student}){
       </div>}
 
       {/* Last PSM set */}
-      {lastAsg && <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #cbd5e1"}}>
-        <div style={{fontSize:9,fontWeight:800,color:"#64748b",textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>Last PSM Set — {lastAsg.date}</div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+      {lastAsg && <div style={hairline}>
+        <div style={eyebrow}>Last PSM Set · {lastAsg.date}</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
           {(lastAsg.worksheets||[]).slice(0,6).map((w,i)=>(
-            <span key={i} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:5,padding:"2px 7px",fontSize:10,color:"#475569"}}>{w.title}</span>
+            <span key={i} style={{background:"#FAF7F2",border:"1px solid rgba(15,26,46,.12)",borderRadius:2,padding:"3px 8px",fontSize:10,color:"#2E3A57",fontFamily:"'IBM Plex Sans',system-ui,sans-serif"}}>{w.title}</span>
           ))}
-          {(lastAsg.worksheets||[]).length>6 && <span style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>+{lastAsg.worksheets.length-6} more</span>}
+          {(lastAsg.worksheets||[]).length>6 && <span style={{fontSize:10,color:"#66708A",fontStyle:"italic",padding:"3px 4px"}}>+{lastAsg.worksheets.length-6} more</span>}
           {(lastAsg.welledDomain||[]).map((w,i)=>(
-            <span key={`w${i}`} style={{background:"#ecfdf5",border:"1px solid #a7f3d0",color:"#065f46",borderRadius:5,padding:"2px 7px",fontSize:10}}>{w.label}</span>
+            <span key={`w${i}`} style={{background:"#F5ECDF",border:"1px solid rgba(154,91,31,.25)",color:"#6E3F12",borderRadius:2,padding:"3px 8px",fontSize:10,fontFamily:"'IBM Plex Sans',system-ui,sans-serif"}}>{w.label}</span>
           ))}
           {(lastAsg.practiceExams||[]).map((ex,i)=>(
-            <span key={`p${i}`} style={{background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",borderRadius:5,padding:"2px 7px",fontSize:10}}>📘 {ex.platform} #{ex.number}</span>
+            <span key={`p${i}`} style={{background:"#E9F0F6",border:"1px solid rgba(0,74,121,.25)",color:"#003258",borderRadius:2,padding:"3px 8px",fontSize:10,fontFamily:"'IBM Plex Sans',system-ui,sans-serif"}}>{ex.platform} #{ex.number}</span>
           ))}
         </div>
       </div>}
@@ -1698,23 +1702,23 @@ function VocabPicker({vocabChk,setVocabChk}){
   const sets = useMemo(()=>VOCAB_SETS.filter(n=>n.toLowerCase().includes(search.toLowerCase())),[search]);
   return(
     <div>
-      <input placeholder="🔍 Search vocab sets..." value={search} onChange={e=>setSearch(e.target.value)} style={{...INP,fontSize:11,marginBottom:6}}/>
-      <div style={{maxHeight:240,overflowY:"auto",border:"1px solid #e9d5ff",borderRadius:6,padding:6}}>
+      <input placeholder="Search vocab sets…" value={search} onChange={e=>setSearch(e.target.value)} style={{...INP,fontSize:11,marginBottom:8,fontStyle:search?"normal":"italic"}}/>
+      <div style={{maxHeight:240,overflowY:"auto",border:"1px solid rgba(91,75,138,.22)",borderRadius:4,padding:6,background:"rgba(255,255,255,.5)"}}>
         {sets.map(name=>{
           const flashId = `VF|${name}`;
           const expanded = show[name];
           return(
-            <div key={name} style={{marginBottom:5,background:expanded?"#faf5ff":"transparent",borderRadius:5,padding:4}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
-                <input type="checkbox" checked={!!vocabChk[flashId]} onChange={()=>setVocabChk(prev=>({...prev,[flashId]:!prev[flashId]}))}/>
-                <span style={{flex:1,fontWeight:600,color:"#581c87"}}>{name}</span>
-                <button onClick={()=>setShow(prev=>({...prev,[name]:!prev[name]}))} style={{background:"none",border:"1px solid #d8b4fe",borderRadius:4,padding:"1px 6px",fontSize:9,color:"#7c3aed",cursor:"pointer"}}>{expanded?"−":"Quiz"}</button>
+            <div key={name} style={{marginBottom:4,background:expanded?"rgba(91,75,138,.06)":"transparent",borderRadius:3,padding:"5px 6px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                <input type="checkbox" checked={!!vocabChk[flashId]} onChange={()=>setVocabChk(prev=>({...prev,[flashId]:!prev[flashId]}))} style={{accentColor:"#5B4B8A"}}/>
+                <span style={{flex:1,fontWeight:500,color:"#0F1A2E"}}>{name}</span>
+                <button onClick={()=>setShow(prev=>({...prev,[name]:!prev[name]}))} style={{background:"transparent",border:"1px solid rgba(91,75,138,.35)",borderRadius:2,padding:"2px 8px",fontSize:9,color:"#5B4B8A",cursor:"pointer",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:.4,textTransform:"uppercase",fontWeight:500}}>{expanded?"Hide":"Quiz"}</button>
               </div>
-              {expanded&&<div style={{display:"flex",gap:4,marginTop:4,marginLeft:20}}>
+              {expanded&&<div style={{display:"flex",gap:4,marginTop:6,marginLeft:22}}>
                 {[1,2,3,4].map(v=>{
                   const qid = `VQ|${name}|${v}`;
                   const ck=!!vocabChk[qid];
-                  return <button key={v} onClick={()=>setVocabChk(prev=>({...prev,[qid]:!prev[qid]}))} style={{background:ck?"#7c3aed":"#f3e8ff",color:ck?"#fff":"#7c3aed",border:"none",borderRadius:4,padding:"3px 10px",fontSize:10,fontWeight:700,cursor:"pointer"}}>Q{v}</button>;
+                  return <button key={v} onClick={()=>setVocabChk(prev=>({...prev,[qid]:!prev[qid]}))} style={{background:ck?"#5B4B8A":"transparent",color:ck?"#FAF7F2":"#5B4B8A",border:"1px solid "+(ck?"#5B4B8A":"rgba(91,75,138,.35)"),borderRadius:2,padding:"3px 12px",fontSize:10,fontWeight:500,cursor:"pointer",fontFamily:"'IBM Plex Mono',monospace",letterSpacing:.3}}>Q{v}</button>;
                 })}
               </div>}
             </div>
@@ -1727,48 +1731,57 @@ function VocabPicker({vocabChk,setVocabChk}){
 
 /* ============ STUDENTS LIST ============ */
 function StudentsList({students,showAdd,setShowAdd,newS,setNewS,addStudent,openProfile,delStudent}){
+  const thStyle = {padding:"12px 16px",textAlign:"left",fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,letterSpacing:1.2,textTransform:"uppercase",color:"#66708A",borderBottom:"1px solid rgba(15,26,46,.15)"};
   return(
     <div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-        <div style={{fontSize:20,fontWeight:800,color:B2}}>Students</div>
-        <button onClick={()=>setShowAdd(!showAdd)} style={{...mkBtn(B2,"#fff")}}>+ Add Student</button>
+      <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:24,paddingBottom:16,borderBottom:"1px solid rgba(15,26,46,.1)"}}>
+        <div>
+          <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,fontWeight:600,letterSpacing:1.4,color:"#66708A",textTransform:"uppercase",marginBottom:6}}>Roster</div>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 144',fontSize:34,fontWeight:600,color:"#0F1A2E",letterSpacing:-.6,lineHeight:1}}>Students</div>
+        </div>
+        <button onClick={()=>setShowAdd(!showAdd)} style={{...mkBtn(B2,"#FAF7F2"),padding:"10px 18px",fontSize:12,fontWeight:600,letterSpacing:.3,textTransform:"uppercase",boxShadow:"0 4px 14px -4px rgba(0,50,88,.4)"}}>{showAdd?"Cancel":"+ New Student"}</button>
       </div>
       {showAdd&&(
-        <div style={{...CARD,maxWidth:520,marginBottom:16}}>
-          <div style={{fontSize:14,fontWeight:800,color:B2,marginBottom:14}}>New Student</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+        <div style={{...CARD,maxWidth:640,marginBottom:24,padding:24}}>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:20,fontWeight:600,color:"#0F1A2E",marginBottom:16,letterSpacing:-.3}}>New Student</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:18}}>
             {[["name","Student Name *","e.g. Jane Smith"],["grade","Grade Level","e.g. 11th"],["tutor","Assigned Tutor","Tutor name"],["notes","Notes","Optional info"]].map(([k,label,ph])=>(
               <div key={k}>
-                <div style={{fontSize:10,color:"#64748b",marginBottom:4,fontWeight:600}}>{label}</div>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",marginBottom:5,fontWeight:600,letterSpacing:1.2,textTransform:"uppercase"}}>{label}</div>
                 <input value={newS[k]} onChange={e=>setNewS(prev=>({...prev,[k]:e.target.value}))} placeholder={ph} style={INP}/>
               </div>
             ))}
           </div>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={addStudent} style={{...mkBtn(B2,"#fff")}}>Add Student</button>
-            <button onClick={()=>setShowAdd(false)} style={{...mkBtn("#f1f5f9","#475569")}}>Cancel</button>
+            <button onClick={addStudent} style={{...mkBtn(B2,"#FAF7F2"),padding:"8px 18px",fontSize:12,fontWeight:600,letterSpacing:.3,textTransform:"uppercase"}}>Add Student</button>
+            <button onClick={()=>setShowAdd(false)} style={{...mkBtn("transparent","#2E3A57"),border:"1px solid rgba(15,26,46,.18)",padding:"8px 18px",fontSize:12}}>Cancel</button>
           </div>
         </div>
       )}
       {students.length===0?(
-        <div style={{...CARD,padding:50,textAlign:"center",color:"#94a3b8"}}><div style={{fontSize:32,marginBottom:8}}>👤</div><div style={{fontSize:16,fontWeight:600}}>No students enrolled yet</div></div>
+        <div style={{...CARD,padding:"72px 40px",textAlign:"center"}}>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 144',fontStyle:"italic",fontSize:22,fontWeight:400,color:"#66708A",letterSpacing:-.2,marginBottom:8}}>No students enrolled yet.</div>
+          <div style={{fontSize:11,color:"#66708A"}}>Click <span style={{fontWeight:600,color:"#0F1A2E"}}>+ New Student</span> to get started.</div>
+        </div>
       ):(
-        <div style={{...CARD,overflow:"hidden"}}>
+        <div style={{...CARD,overflow:"hidden",padding:0}}>
           <table style={{width:"100%",borderCollapse:"collapse"}}>
-            <thead><tr style={{background:B2,color:"#fff"}}>{["Name","Grade","Tutor","Date Added","Worksheets","Diagnostics","Actions"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:700}}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Name","Grade","Tutor","Enrolled","Worksheets","Diagnostics",""].map(h=><th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
               {students.map((st,i)=>{
                 const wsCnt=(st.assignments||[]).reduce((n,a)=>n+(a.worksheets||[]).length,0);
                 const dCnt=(st.diagnostics||[]).length;
                 return(
-                  <tr key={st.id} style={{borderBottom:"1px solid #f1f5f9",background:i%2===0?"#fff":"#f8fafc"}}>
-                    <td style={{padding:"11px 14px",fontWeight:700,color:B2,fontSize:14}}>{st.name}</td>
-                    <td style={{padding:"11px 14px",fontSize:13,color:"#475569"}}>{st.grade||"—"}</td>
-                    <td style={{padding:"11px 14px",fontSize:13,color:"#475569"}}>{st.tutor||"—"}</td>
-                    <td style={{padding:"11px 14px",fontSize:12,color:"#94a3b8"}}>{st.dateAdded}</td>
-                    <td style={{padding:"11px 14px"}}><Tag c="#eff6ff" t="#1d4ed8">{wsCnt} worksheets</Tag></td>
-                    <td style={{padding:"11px 14px"}}><Tag c={dCnt?"#f0fdf4":"#f1f5f9"} t={dCnt?"#15803d":"#94a3b8"}>{dCnt} reports</Tag></td>
-                    <td style={{padding:"11px 14px"}}><div style={{display:"flex",gap:6}}><button onClick={()=>openProfile(st)} style={{...mkBtn("#eff6ff",B2),padding:"4px 12px",fontSize:12}}>Profile</button><button onClick={()=>delStudent(st.id)} style={{...mkBtn("#fee2e2","#dc2626"),padding:"4px 10px",fontSize:12}}>✕</button></div></td>
+                  <tr key={st.id} style={{borderBottom:i===students.length-1?"none":"1px solid rgba(15,26,46,.06)"}}>
+                    <td style={{padding:"14px 16px"}}>
+                      <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 96',fontSize:16,fontWeight:600,color:"#0F1A2E",letterSpacing:-.2}}>{st.name}</div>
+                    </td>
+                    <td style={{padding:"14px 16px",fontSize:12,color:"#2E3A57"}}>{st.grade||<span style={{color:"#66708A"}}>—</span>}</td>
+                    <td style={{padding:"14px 16px",fontSize:12,color:"#2E3A57"}}>{st.tutor||<span style={{color:"#66708A"}}>—</span>}</td>
+                    <td style={{padding:"14px 16px",fontSize:11,color:"#66708A",fontFamily:"'IBM Plex Mono',monospace"}}>{st.dateAdded}</td>
+                    <td style={{padding:"14px 16px"}}><span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.25)"}}>{wsCnt} sheets</span></td>
+                    <td style={{padding:"14px 16px"}}><span style={{...mkPill("transparent",dCnt?"#4C7A4C":"#66708A"),border:"1px solid "+(dCnt?"rgba(76,122,76,.35)":"rgba(15,26,46,.15)")}}>{dCnt} reports</span></td>
+                    <td style={{padding:"14px 16px",textAlign:"right"}}><div style={{display:"flex",gap:6,justifyContent:"flex-end"}}><button onClick={()=>openProfile(st)} style={{...mkBtn("transparent",B2),border:"1px solid rgba(0,74,121,.3)",padding:"5px 14px",fontSize:11}}>Profile →</button><button onClick={()=>delStudent(st.id)} title="Remove student" style={{...mkBtn("transparent","#8C2E2E"),border:"1px solid rgba(140,46,46,.3)",padding:"5px 10px",fontSize:11}}>✕</button></div></td>
                   </tr>
                 );
               })}
