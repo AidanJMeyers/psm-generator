@@ -1086,6 +1086,10 @@ function AppInner({authUser, onSignOut}){
   // Wise CSV import staging — null = no import in progress, object = preview dialog open.
   const[wiseImport,setWiseImport]=useState(null);
   const wiseInputRef=useRef(null);
+  // Global search (⌘K / Ctrl+K)
+  const[searchOpen,setSearchOpen]=useState(false);
+  const[searchQuery,setSearchQuery]=useState("");
+  const searchInputRef=useRef(null);
   const[newS,setNewS]=useState({name:"",grade:"",tutor:"",notes:""});
   const[ptab,setPtab]=useState("history");
   const[paChk,setPaChk]=useState({});
@@ -1724,6 +1728,96 @@ function AppInner({authUser, onSignOut}){
   const p = profile && (visibleStudents.find(st=>st.id===profile.id) || students.find(st=>st.id===profile.id) || profile);
   const diagProfile = useMemo(()=>p?.diagnostics?.length?buildDiagnosticProfile(p.diagnostics):null,[p]);
 
+  // Global search keyboard shortcut — Cmd/Ctrl+K toggles, Escape closes.
+  useEffect(()=>{
+    const onKey = (e)=>{
+      if((e.metaKey||e.ctrlKey) && e.key && e.key.toLowerCase()==="k"){
+        e.preventDefault();
+        setSearchOpen(o=>!o);
+      } else if(e.key==="Escape"){
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return ()=>window.removeEventListener("keydown", onKey);
+  },[]);
+  // When the search overlay opens, clear the query and focus the input.
+  useEffect(()=>{
+    if(searchOpen){
+      setSearchQuery("");
+      setTimeout(()=>searchInputRef.current?.focus(),20);
+    }
+  },[searchOpen]);
+
+  // Grouped search results — substring (case-insensitive), all tokens must match.
+  const searchResults = useMemo(()=>{
+    const q = searchQuery.trim().toLowerCase();
+    if(!q) return null;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const hit = (text)=>{
+      const t = (text||"").toLowerCase();
+      return tokens.every(tok => t.includes(tok));
+    };
+    const groups = {students:[], worksheets:[], welled:[], exams:[], diagnostics:[], scores:[]};
+    for(const st of visibleStudents){
+      const stName = st.name || "(unnamed)";
+      const stBlob = [stName, st.meta?.email, st.meta?.phone, st.meta?.gradeLevel, st.meta?.levelOfTutoring, st.meta?.subjectOfTutoring, st.meta?.goals].filter(Boolean).join(" ");
+      if(hit(stBlob)){
+        groups.students.push({student:st, ptab:"history", label:stName, detail:[st.meta?.email,st.meta?.gradeLevel,st.meta?.levelOfTutoring].filter(Boolean).join(" · ")});
+      }
+      // Every nested blob starts with the student name so queries like
+      // "sample info" (student + worksheet topic) match the right row.
+      for(const a of st.assignments||[]){
+        for(const ws of a.worksheets||[]){
+          const blob = [stName, ws.title, ws.domain, ws.subdomain, ws.difficulty, ws.subject, a.date].filter(Boolean).join(" ");
+          if(hit(blob)){
+            groups.worksheets.push({student:st, ptab:"history", label:ws.title||"Worksheet", detail:`${stName} · ${ws.domain||""}${ws.difficulty?` · ${ws.difficulty}`:""} · ${a.date||""}`});
+          }
+        }
+        for(const w of a.welledDomain||[]){
+          const blob = [stName, w.label, w.domain, w.difficulty, w.subject, a.date].filter(Boolean).join(" ");
+          if(hit(blob)){
+            groups.welled.push({student:st, ptab:"history", label:w.label||w.domain||"WellEd", detail:`${stName} · ${w.subject||""}${w.difficulty?` · ${w.difficulty}`:""} · ${a.date||""}`});
+          }
+        }
+        for(const ex of a.practiceExams||[]){
+          const blob = [stName, ex.platform, ex.number, ex.type, a.date].filter(Boolean).join(" ");
+          if(hit(blob)){
+            groups.exams.push({student:st, ptab:"history", label:`${ex.platform||"Exam"} #${ex.number||"?"}`, detail:`${stName} · ${ex.type||"full"} · ${a.date||""}`});
+          }
+        }
+      }
+      for(const d of st.diagnostics||[]){
+        const blob = [stName, d.testName, d.dateTaken, d.name].filter(Boolean).join(" ");
+        if(hit(blob)){
+          groups.diagnostics.push({student:st, ptab:"diagnostics", label:d.testName||d.name||"Diagnostic", detail:`${stName} · ${d.dateTaken||""}`});
+        }
+      }
+      for(const sc of st.scores||[]){
+        const blob = [stName, sc.testType, sc.notes, sc.score, sc.maxScore, sc.date].filter(Boolean).join(" ");
+        if(hit(blob)){
+          groups.scores.push({student:st, ptab:"scores", label:sc.testType||"Score", detail:`${stName} · ${sc.score||"—"}${sc.maxScore?` / ${sc.maxScore}`:""} · ${sc.date||""}`});
+        }
+      }
+      for(const lg of st.welledLogs||[]){
+        const blob = [stName, lg.subject, lg.domain, lg.difficulty, lg.notes, lg.date].filter(Boolean).join(" ");
+        if(hit(blob)){
+          groups.scores.push({student:st, ptab:"scores", label:`WellEd · ${lg.domain||""}`, detail:`${stName} · ${lg.score||"—"} · ${lg.date||""}`});
+        }
+      }
+    }
+    const total = Object.values(groups).reduce((n,a)=>n+a.length,0);
+    return {groups, total};
+  },[searchQuery, visibleStudents]);
+
+  // Navigate to a search result — open the student profile at the right sub-tab.
+  const selectSearchResult = (r)=>{
+    setTab("students");
+    setProfile(r.student);
+    setPtab(r.ptab||"history");
+    setSearchOpen(false);
+  };
+
   // Counts for the Trash tab badge.
   const trashCount = useMemo(()=>{
     let n = 0;
@@ -1756,6 +1850,82 @@ function AppInner({authUser, onSignOut}){
     <div style={{fontFamily:"'IBM Plex Sans',system-ui,sans-serif",background:"var(--paper)",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
       {toast&&<div style={{position:"fixed",top:16,right:16,background:"#1e293b",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,.25)"}}>{toast}</div>}
       {parsing&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#4338ca",color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999}} className="pl">Parsing diagnostic PDF(s)...</div>}
+
+      {searchOpen && (()=>{
+        const groupDefs = [
+          {key:"students", label:"Students", color:"var(--brand)"},
+          {key:"worksheets", label:"Worksheets", color:"var(--ink-soft)"},
+          {key:"welled", label:"WellEd Domains", color:"var(--accent)"},
+          {key:"exams", label:"Practice Exams", color:"var(--brand-light)"},
+          {key:"diagnostics", label:"Diagnostics", color:"var(--brand-dark)"},
+          {key:"scores", label:"Scores & Logs", color:"var(--ok)"},
+        ];
+        const PER_GROUP = 5;
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(15,26,46,.55)",zIndex:10001,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"80px 24px 24px"}} onClick={()=>setSearchOpen(false)}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"var(--card)",border:"1px solid var(--rule)",borderRadius:14,boxShadow:"var(--shadow-lg)",maxWidth:720,width:"100%",maxHeight:"78vh",display:"flex",flexDirection:"column",overflow:"hidden",position:"relative"}}>
+              <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:"linear-gradient(90deg,var(--brand) 0,var(--brand) 72px,transparent 72px)"}}/>
+              <div style={{padding:"22px 24px 14px",borderBottom:"1px solid var(--rule)",display:"flex",alignItems:"center",gap:12}}>
+                <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{flexShrink:0,color:"var(--ink-mute)"}}><circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5"/><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                <input
+                  ref={searchInputRef}
+                  value={searchQuery}
+                  onChange={e=>setSearchQuery(e.target.value)}
+                  placeholder="Search students, worksheets, domains, exams, scores…"
+                  style={{flex:1,border:"none",outline:"none",background:"transparent",fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 72",fontSize:20,fontWeight:500,color:"var(--ink)",letterSpacing:"-0.01em"}}
+                />
+                <kbd style={{fontFamily:"var(--font-mono)",fontSize:10,color:"var(--ink-mute)",border:"1px solid var(--rule)",padding:"2px 7px",borderRadius:4,letterSpacing:0}}>Esc</kbd>
+              </div>
+              <div style={{flex:1,overflowY:"auto",padding:"8px 0"}}>
+                {!searchResults ? (
+                  <div style={{padding:"40px 24px",textAlign:"center",color:"var(--ink-mute)",fontFamily:"var(--font-display)",fontStyle:"italic",fontSize:14}}>
+                    Start typing to search across students, worksheets, domains, exams, scores, and diagnostics.
+                  </div>
+                ) : searchResults.total===0 ? (
+                  <div style={{padding:"40px 24px",textAlign:"center",color:"var(--ink-mute)",fontFamily:"var(--font-display)",fontStyle:"italic",fontSize:14}}>
+                    No matches for “{searchQuery}”.
+                  </div>
+                ) : (
+                  groupDefs.map(g=>{
+                    const items = searchResults.groups[g.key];
+                    if(!items.length) return null;
+                    const shown = items.slice(0,PER_GROUP);
+                    const more = items.length - shown.length;
+                    return (
+                      <div key={g.key} style={{padding:"10px 0"}}>
+                        <div style={{padding:"4px 24px",fontFamily:"var(--font-mono)",fontSize:9,fontWeight:600,color:"var(--ink-mute)",letterSpacing:"0.1em",textTransform:"uppercase",display:"flex",alignItems:"center",gap:10}}>
+                          <span style={{width:6,height:6,borderRadius:"50%",background:g.color}}/>
+                          {g.label}
+                          <span style={{marginLeft:"auto",opacity:.7}}>{items.length}</span>
+                        </div>
+                        {shown.map((r,i)=>(
+                          <button key={i} onClick={()=>selectSearchResult(r)} style={{
+                            display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",
+                            padding:"10px 24px",cursor:"pointer",borderLeft:`2px solid transparent`,
+                            transition:"background .12s ease, border-color .12s ease"
+                          }}
+                          onMouseEnter={e=>{e.currentTarget.style.background="var(--paper-alt)";e.currentTarget.style.borderLeftColor=g.color;}}
+                          onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.borderLeftColor="transparent";}}
+                          >
+                            <div style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 48",fontSize:14,fontWeight:500,color:"var(--ink)",letterSpacing:"-0.005em"}}>{r.label}</div>
+                            {r.detail && <div style={{fontSize:11,color:"var(--ink-mute)",marginTop:2,fontFamily:"var(--font-mono)"}}>{r.detail}</div>}
+                          </button>
+                        ))}
+                        {more>0 && <div style={{padding:"6px 24px",fontSize:10,color:"var(--ink-mute)",fontFamily:"var(--font-mono)",fontStyle:"italic"}}>+ {more} more — refine your query</div>}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <div style={{padding:"10px 24px",borderTop:"1px solid var(--rule)",background:"var(--paper-alt)",display:"flex",gap:16,fontFamily:"var(--font-mono)",fontSize:9,color:"var(--ink-mute)",letterSpacing:"0.04em",textTransform:"uppercase"}}>
+                <span><kbd style={{fontFamily:"var(--font-mono)",fontSize:9,border:"1px solid var(--rule)",padding:"1px 5px",borderRadius:3,marginRight:4}}>⌘K</kbd> Open</span>
+                <span><kbd style={{fontFamily:"var(--font-mono)",fontSize:9,border:"1px solid var(--rule)",padding:"1px 5px",borderRadius:3,marginRight:4}}>Esc</kbd> Close</span>
+                <span style={{marginLeft:"auto"}}>All words must match · case-insensitive</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {wiseImport && (()=>{
         const newCount = wiseImport.rows.filter(r=>!r.duplicate).length;
@@ -1845,6 +2015,11 @@ function AppInner({authUser, onSignOut}){
             <span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>
             {cloudStatus==="synced"?"Synced":cloudStatus==="connecting"?"Syncing":"Offline"}
           </span>
+          <button onClick={()=>setSearchOpen(true)} title="Search everything (⌘K)" style={{display:"inline-flex",alignItems:"center",gap:7}}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+            Search
+            <span style={{fontFamily:"var(--font-mono)",fontSize:9,opacity:.6,letterSpacing:0,marginLeft:2}}>⌘K</span>
+          </button>
           <button onClick={exportData} title="Export data">Export</button>
           <label title="Import data" style={{cursor:"pointer"}}>
             Import
