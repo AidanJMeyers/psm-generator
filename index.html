@@ -1235,10 +1235,14 @@ function LockoutScreen({email, onSignOut}){
   );
 }
 
-function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, error, info, busy}){
-  const [mode, setMode] = useState("google"); // "google" | "password"
+function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, onEmailLinkSignIn, error, info, busy, initialMode}){
+  // Default to "emaillink" when we've detected a pending assignment from a
+  // Wise deep link — students landing via Wise should see the email-link
+  // path first, not Google.
+  const [mode, setMode] = useState(initialMode || "google"); // "google" | "password" | "emaillink"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [linkEmail, setLinkEmail] = useState("");
 
   const tabStyle = (active)=>({
     flex:1, padding:"10px 14px", border:"1px solid var(--rule-strong)",
@@ -1267,6 +1271,13 @@ function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, error, i
     onForgotPassword(em);
   };
 
+  const submitLink = (e)=>{
+    if(e && e.preventDefault) e.preventDefault();
+    const em = linkEmail.trim().toLowerCase();
+    if(!em) return;
+    onEmailLinkSignIn(em);
+  };
+
   return (
     <div style={{
       minHeight:"100vh",background:"var(--paper)",display:"flex",
@@ -1291,9 +1302,13 @@ function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, error, i
           Access is limited to authorized users. If you don&apos;t see an account here yet, ask Kiran or Aidan for an invitation.
         </p>
 
-        <div style={{display:"flex",marginBottom:22,borderRadius:10,overflow:"hidden"}}>
+        <div style={{display:"flex",marginBottom:8,borderRadius:10,overflow:"hidden"}}>
           <button type="button" onClick={()=>setMode("google")} style={{...tabStyle(mode==="google"), borderRadius:"10px 0 0 10px", borderRight:"none"}}>Google</button>
-          <button type="button" onClick={()=>setMode("password")} style={{...tabStyle(mode==="password"), borderRadius:"0 10px 10px 0"}}>Email &amp; password</button>
+          <button type="button" onClick={()=>setMode("emaillink")} style={{...tabStyle(mode==="emaillink"), borderRadius:0, borderRight:"none"}}>Email link</button>
+          <button type="button" onClick={()=>setMode("password")} style={{...tabStyle(mode==="password"), borderRadius:"0 10px 10px 0"}}>Password</button>
+        </div>
+        <div style={{fontSize:11,color:"var(--ink-mute)",lineHeight:1.5,marginBottom:18,letterSpacing:"0.01em"}}>
+          <strong style={{color:"var(--ink-soft)",fontWeight:600}}>Students &amp; parents</strong>: use <span style={{textDecoration:"underline",color:"var(--ink-soft)"}}>Email link</span>. <strong style={{color:"var(--ink-soft)",fontWeight:600}}>Tutors</strong>: use <span style={{textDecoration:"underline",color:"var(--ink-soft)"}}>Google</span> or <span style={{textDecoration:"underline",color:"var(--ink-soft)"}}>Password</span>.
         </div>
 
         {mode === "google" && (
@@ -1317,6 +1332,32 @@ function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, error, i
               <span>{busy ? "Opening Google…" : "Continue with Google"}</span>
             </button>
           </>
+        )}
+
+        {mode === "emaillink" && (
+          <form onSubmit={submitLink}>
+            <p style={{fontSize:12.5,lineHeight:1.55,color:"var(--ink-soft)",margin:"0 0 14px"}}>
+              Enter your email and we&apos;ll send you a one-time sign-in link. No password needed.
+            </p>
+            <input
+              type="email" autoComplete="email" placeholder="Email"
+              value={linkEmail} onChange={e=>setLinkEmail(e.target.value)}
+              style={input} disabled={busy}
+            />
+            <button
+              type="submit"
+              disabled={busy || !linkEmail}
+              style={{
+                width:"100%",padding:"14px 20px",borderRadius:10,border:"1px solid var(--brand)",
+                background:(busy||!linkEmail)?"var(--paper-alt)":"var(--brand)",
+                color:(busy||!linkEmail)?"var(--ink-mute)":"var(--paper)",
+                fontFamily:"var(--font-body)",fontSize:14,fontWeight:500,letterSpacing:"0.01em",
+                cursor:(busy||!linkEmail)?"default":"pointer",
+                boxShadow:(busy||!linkEmail)?"none":"0 6px 18px -10px rgba(0,74,121,.7)"
+              }}>
+              {busy ? "Sending…" : "Send sign-in link"}
+            </button>
+          </form>
         )}
 
         {mode === "password" && (
@@ -1426,6 +1467,68 @@ function UnverifiedScreen({email, onResend, onSignOut, busy, info, error}){
   );
 }
 
+// Session 13: shown when a student opens a Firebase email-link URL on a
+// different device than the one that requested the link. We can't complete
+// signInWithEmailLink without replaying the email it was sent to, and
+// localStorage from the requesting device isn't available here. Firebase
+// requires this step explicitly to defend against link forwarding.
+function ConfirmEmailScreen({onConfirm, error, busy}){
+  const [email, setEmail] = useState("");
+  const submit = (e)=>{
+    if(e && e.preventDefault) e.preventDefault();
+    const em = email.trim().toLowerCase();
+    if(!em) return;
+    onConfirm(em);
+  };
+  return (
+    <div style={{
+      minHeight:"100vh",background:"var(--paper)",display:"flex",
+      alignItems:"center",justifyContent:"center",padding:"40px 24px",
+      backgroundImage:"radial-gradient(circle at 20% 10%, rgba(0,74,121,.06), transparent 45%), radial-gradient(circle at 80% 80%, rgba(154,91,31,.05), transparent 45%)"
+    }}>
+      <div style={{
+        maxWidth:480,width:"100%",background:"var(--card)",
+        border:"1px solid var(--rule)",borderRadius:14,
+        boxShadow:"var(--shadow-lg)",padding:"44px 44px 36px",position:"relative",overflow:"hidden"
+      }}>
+        <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:"linear-gradient(90deg,var(--brand) 0,var(--brand) 72px,transparent 72px)"}}/>
+        <h2 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 72",fontWeight:500,fontSize:22,margin:"0 0 10px",letterSpacing:"-0.01em"}}>Confirm your email</h2>
+        <p style={{fontSize:13.5,lineHeight:1.55,color:"var(--ink-soft)",margin:"0 0 18px"}}>
+          Type the email address this sign-in link was sent to. We need to match the link to the right account before signing you in.
+        </p>
+        <form onSubmit={submit}>
+          <input
+            type="email" autoComplete="email" placeholder="Email"
+            value={email} onChange={e=>setEmail(e.target.value)}
+            style={{
+              width:"100%", padding:"12px 14px", borderRadius:10,
+              border:"1px solid var(--rule-strong)", background:"var(--paper)",
+              fontFamily:"var(--font-body)", fontSize:14, color:"var(--ink)",
+              marginBottom:12,
+            }}
+            disabled={busy}
+          />
+          <button
+            type="submit"
+            disabled={busy || !email}
+            style={{
+              width:"100%",padding:"14px 20px",borderRadius:10,border:"1px solid var(--brand)",
+              background:(busy||!email)?"var(--paper-alt)":"var(--brand)",
+              color:(busy||!email)?"var(--ink-mute)":"var(--paper)",
+              fontFamily:"var(--font-body)",fontSize:14,fontWeight:500,letterSpacing:"0.01em",
+              cursor:(busy||!email)?"default":"pointer",
+            }}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+        {error && (
+          <div style={{marginTop:18,padding:"12px 14px",borderRadius:8,background:"var(--accent-soft)",border:"1px solid rgba(154,91,31,.3)",fontSize:12.5,color:"var(--accent)",lineHeight:1.5}}>{error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Dev bypass (Option C) ──────────────────────────────────────────────────
 // Localhost-only escape hatch: if the page is served from localhost/127.0.0.1
 // AND the URL contains ?dev=1, skip SignInScreen and stub a fake authUser so
@@ -1483,6 +1586,62 @@ const DEV_FAKE_ENTRY = {
   addedBy: "dev-bypass",
   addedAt: null,
 };
+
+// ── Session 13: magic-link auth + deep-link handoff ───────────────────────
+// Hardcoded prod host so Wise-delivered deep links always return to the
+// custom domain, never psm-generator.web.app — see PHASE_3_SESSION_11b.md
+// follow-up #5. On localhost we fall back to location.origin so dev-mode
+// email-link flows can be exercised without bouncing through prod.
+const AUTH_CONTINUE_HOST = (()=>{
+  if(typeof location === "undefined") return "https://portal.affordabletutoringsolutions.org";
+  const h = location.hostname;
+  if(h === "localhost" || h === "127.0.0.1") return location.origin;
+  return "https://portal.affordabletutoringsolutions.org";
+})();
+
+// sessionStorage key the deep-link parser stashes into, and StudentPortal
+// reads on mount. Session 14 replaces the banner with a real editor open.
+const PENDING_ASSIGNMENT_KEY = "psm-pending-assignment";
+// localStorage key for the email the user typed into SignInScreen. Firebase
+// requires us to replay it when completing signInWithEmailLink so we can
+// verify the link hasn't been forwarded to a different address. Cross-device
+// opens clear localStorage between devices; ConfirmEmailScreen handles that.
+const EMAIL_FOR_SIGNIN_KEY = "psm-email-for-signin";
+
+// Parse ?a=<assignmentId>&s=<studentId> out of the current URL and stash in
+// sessionStorage. Called at module load (initial deep-link arrival) and again
+// after the Firebase email-link redirect, since Firebase preserves the `a`
+// and `s` params on the continue URL it bounces back to.
+function stashPendingAssignmentFromUrl(){
+  if(typeof location === "undefined" || typeof sessionStorage === "undefined") return;
+  try{
+    const params = new URLSearchParams(location.search);
+    const a = params.get("a");
+    const s = params.get("s");
+    if(a && s){
+      sessionStorage.setItem(PENDING_ASSIGNMENT_KEY, JSON.stringify({a, s, stashedAt: Date.now()}));
+    }
+  }catch{ /* private mode or malformed URL — ignore */ }
+}
+stashPendingAssignmentFromUrl();
+
+// Build the continueUrl passed to sendSignInLinkToEmail. Preserves whatever
+// ?a=&s= params are on the current URL so the student lands back on the
+// same assignment after clicking the email link, then `a` and `s` get
+// re-stashed on return by stashPendingAssignmentFromUrl().
+function buildAuthContinueUrl(){
+  try{
+    const u = new URL(AUTH_CONTINUE_HOST);
+    const cur = new URLSearchParams(location.search);
+    const a = cur.get("a");
+    const s = cur.get("s");
+    if(a) u.searchParams.set("a", a);
+    if(s) u.searchParams.set("s", s);
+    return u.toString();
+  }catch{
+    return AUTH_CONTINUE_HOST;
+  }
+}
 
 // Portal routing helper. Session 4 will add a child-switcher that may pick a
 // different id from entry.studentIds; for Session 3 we always take the first.
@@ -1711,6 +1870,16 @@ function App(){
   // (which is what marks their email verified). Google users should never
   // hit this state because Google always reports verified emails.
   const [unverifiedUser, setUnverifiedUser] = useState(null);
+  // Session 13: when the user lands on a Firebase email-link URL but we have
+  // no stored email (different device than the one that requested the link),
+  // we render ConfirmEmailScreen to collect it before calling signInWithEmailLink.
+  const [needsEmailConfirm, setNeedsEmailConfirm] = useState(false);
+  // Whether the initial URL carried ?a=&s= — drives SignInScreen's default tab.
+  const hasPendingAssignment = (()=>{
+    if(typeof sessionStorage === "undefined") return false;
+    try{ return !!sessionStorage.getItem(PENDING_ASSIGNMENT_KEY); }
+    catch{ return false; }
+  })();
 
   useEffect(()=>{
     if(DEV_BYPASS){
@@ -1764,6 +1933,61 @@ function App(){
       setSignInBusy(false);
     });
     return ()=>unsub();
+  },[]);
+
+  // Session 13: complete an incoming Firebase email-link sign-in. Runs once
+  // on mount. Detects isSignInWithEmailLink, pulls the email out of
+  // localStorage (or defers to ConfirmEmailScreen if this is a different
+  // device), calls signInWithEmailLink, and then onAuthStateChanged takes
+  // over the same way it does for Google/password sign-ins. The query
+  // params ?a=&s= are preserved by Firebase on the redirect and re-stashed
+  // by the module-load parser, so by the time we reach RoleRouter the
+  // pending-assignment handoff is already in sessionStorage.
+  useEffect(()=>{
+    if(DEV_BYPASS) return;
+    if(!window.auth) return;
+    if(!firebase?.auth?.() || typeof window.auth.isSignInWithEmailLink !== "function") return;
+    if(!window.auth.isSignInWithEmailLink(location.href)) return;
+
+    let stored = "";
+    try{ stored = localStorage.getItem(EMAIL_FOR_SIGNIN_KEY) || ""; }
+    catch{ /* private mode */ }
+
+    if(!stored){
+      // Cross-device: the opening device never typed an email, so we can't
+      // complete the sign-in without the user re-entering it. Render
+      // ConfirmEmailScreen instead of signing in automatically.
+      setNeedsEmailConfirm(true);
+      setAuthReady(true);
+      return;
+    }
+
+    setSignInBusy(true);
+    window.auth.signInWithEmailLink(stored, location.href)
+      .then(()=>{
+        try{ localStorage.removeItem(EMAIL_FOR_SIGNIN_KEY); }catch{}
+        // Strip Firebase's oobCode/apiKey/mode params from the URL but
+        // keep ?a=&s= so the deep-link params stay visible and re-stashable.
+        try{
+          const u = new URL(location.href);
+          ["apiKey","oobCode","mode","continueUrl","lang"].forEach(k=>u.searchParams.delete(k));
+          history.replaceState({}, "", u.toString());
+          stashPendingAssignmentFromUrl();
+        }catch{}
+        // onAuthStateChanged will route us from here.
+      })
+      .catch(e=>{
+        setSignInBusy(false);
+        const code = e && e.code;
+        if(code === "auth/invalid-action-code" || code === "auth/expired-action-code"){
+          setSignInError("This sign-in link has expired or already been used. Ask your tutor to resend it, or request a new one below.");
+        } else if(code === "auth/invalid-email"){
+          setSignInError("The email stored on this device doesn't match the link. Try requesting a new link.");
+        } else {
+          setSignInError(e && e.message ? e.message : "Couldn't complete sign-in from the email link.");
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
   const handleGoogleSignIn = async ()=>{
@@ -1834,6 +2058,61 @@ function App(){
     setSignInBusy(false);
   };
 
+  const handleEmailLinkSignIn = async (email)=>{
+    if(!window.auth){ setSignInError("Auth not initialized."); return; }
+    setSignInBusy(true);
+    setSignInError("");
+    setSignInInfo("");
+    try{
+      await window.auth.sendSignInLinkToEmail(email, {
+        url: buildAuthContinueUrl(),
+        handleCodeInApp: true,
+      });
+      try{ localStorage.setItem(EMAIL_FOR_SIGNIN_KEY, email); }catch{}
+      setSignInInfo(`Sign-in link sent to ${email}. Check your inbox (and spam). The link opens this page.`);
+    }catch(e){
+      const code = e && e.code;
+      if(code === "auth/invalid-email"){
+        setSignInError("That doesn't look like a valid email.");
+      } else if(code === "auth/unauthorized-continue-uri"){
+        setSignInError("This domain isn't authorized for email-link sign-in. Ask Kiran to add it in Firebase.");
+      } else if(code === "auth/missing-continue-uri" || code === "auth/invalid-continue-uri"){
+        setSignInError("Internal: bad continue URL. Report this to Kiran.");
+      } else {
+        setSignInError(e && e.message ? e.message : "Couldn't send the sign-in link.");
+      }
+    }
+    setSignInBusy(false);
+  };
+
+  const handleConfirmEmail = async (email)=>{
+    if(!window.auth){ setSignInError("Auth not initialized."); return; }
+    setSignInBusy(true);
+    setSignInError("");
+    try{
+      await window.auth.signInWithEmailLink(email, location.href);
+      try{ localStorage.removeItem(EMAIL_FOR_SIGNIN_KEY); }catch{}
+      try{
+        const u = new URL(location.href);
+        ["apiKey","oobCode","mode","continueUrl","lang"].forEach(k=>u.searchParams.delete(k));
+        history.replaceState({}, "", u.toString());
+        stashPendingAssignmentFromUrl();
+      }catch{}
+      setNeedsEmailConfirm(false);
+      // onAuthStateChanged routes from here.
+    }catch(e){
+      setSignInBusy(false);
+      const code = e && e.code;
+      if(code === "auth/invalid-email" || code === "auth/invalid-action-code"){
+        setSignInError("That email doesn't match this sign-in link. Double-check the address the link was sent to.");
+      } else if(code === "auth/expired-action-code"){
+        setSignInError("This sign-in link has expired. Ask for a new one.");
+      } else {
+        setSignInError(e && e.message ? e.message : "Couldn't complete sign-in.");
+      }
+    }
+  };
+
   const handleResendVerification = async ()=>{
     if(!unverifiedUser){ return; }
     setSignInError("");
@@ -1877,6 +2156,14 @@ function App(){
     );
   }
 
+  if(needsEmailConfirm){
+    return <ConfirmEmailScreen
+      onConfirm={handleConfirmEmail}
+      error={signInError}
+      busy={signInBusy}
+    />;
+  }
+
   if(unverifiedUser){
     return <UnverifiedScreen
       email={unverifiedUser.email}
@@ -1896,7 +2183,9 @@ function App(){
     return <SignInScreen
       onGoogleSignIn={handleGoogleSignIn}
       onEmailSignIn={handleEmailSignIn}
+      onEmailLinkSignIn={handleEmailLinkSignIn}
       onForgotPassword={handleForgotPassword}
+      initialMode={hasPendingAssignment ? "emaillink" : "google"}
       error={signInError}
       info={signInInfo}
       busy={signInBusy}
@@ -4696,6 +4985,47 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   const [tab, setTab] = useState("tracking");
   const {status, student} = usePortalStudent(studentId);
+  // Session 13: pending-assignment handoff from the Wise deep link. Read
+  // once on mount; the real SubmissionEditor open lands in Session 14.
+  const [pendingAssignment, setPendingAssignment] = useState(()=>{
+    if(typeof sessionStorage === "undefined") return null;
+    try{
+      const raw = sessionStorage.getItem(PENDING_ASSIGNMENT_KEY);
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      // Only surface the banner if the deep-link s= matches the portal's
+      // studentId — otherwise a parent's pendingAssignment would bleed
+      // across children. Silently ignore mismatches (they aren't an error;
+      // they just mean this isn't the right portal view yet).
+      if(parsed && parsed.s && parsed.s !== studentId) return null;
+      return parsed;
+    }catch{ return null; }
+  });
+  const dismissPendingAssignment = ()=>{
+    setPendingAssignment(null);
+    try{ sessionStorage.removeItem(PENDING_ASSIGNMENT_KEY); }catch{}
+  };
+  const pendingAssignmentBanner = pendingAssignment ? (
+    <div style={{
+      marginBottom:24,padding:"16px 20px",borderRadius:10,
+      background:"#fff7ec",border:"1px solid rgba(154,91,31,.35)",
+      display:"flex",alignItems:"flex-start",gap:14,
+    }}>
+      <div style={{flex:1}}>
+        <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 48',fontSize:15,fontWeight:600,color:"#0F1A2E",marginBottom:4,letterSpacing:-.1}}>
+          Your tutor sent you a worksheet
+        </div>
+        <div style={{fontSize:13,lineHeight:1.55,color:"#4A5570"}}>
+          Assignment <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{pendingAssignment.a}</span> is ready. The in-browser worksheet editor is shipping in the next update — until then, use Assignment History to track your progress.
+        </div>
+      </div>
+      <button onClick={dismissPendingAssignment} style={{
+        border:"1px solid rgba(15,26,46,.2)",background:"#fff",color:"#0F1A2E",
+        padding:"8px 14px",borderRadius:8,fontFamily:"'Fraunces',Georgia,serif",fontSize:12,
+        fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",
+      }}>Dismiss</button>
+    </div>
+  ) : null;
 
   if(status === "loading"){
     return (
@@ -4708,6 +5038,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "error"){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
+        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#8C2E2E",letterSpacing:-.2}}>
             Couldn't load your student record. Try reloading.
@@ -4720,6 +5051,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "not-found" || !student){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
+        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:10}}>
             No student record linked to this account.
@@ -4734,6 +5066,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
 
   return (
     <PortalShell studentName={student.name} studentGrade={student.grade} onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
+      {pendingAssignmentBanner}
       <div style={{display:"flex",gap:28,marginBottom:24,borderBottom:"1px solid rgba(15,26,46,.12)",flexWrap:"wrap"}}>
         {[
           {id:"tracking", label:"Score Tracking"},
