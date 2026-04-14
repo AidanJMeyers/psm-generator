@@ -1339,6 +1339,18 @@ function canSubmitDraft(submission){
   return text.length > 0;
 }
 
+function makeDraftPayload({assignmentId, answersText, isCreate}){
+  const FV = firebase.firestore.FieldValue;
+  const base = {
+    assignmentId,
+    responses: [{questionIndex: 0, studentAnswer: answersText || ""}],
+    status: "draft",
+    updatedAt: FV.serverTimestamp(),
+  };
+  if(isCreate) base.createdAt = FV.serverTimestamp();
+  return base;
+}
+
 // Build the x-ordered points the Score Trends chart plots. A full practice
 // score is any point whose category matches the fullPts regex used in
 // ScoreHistoryPanel. Dateless / NaN points are dropped (can't be plotted).

@@ -195,3 +195,47 @@ test('canSubmitDraft: draft with missing responses → false', () => {
 test('canSubmitDraft: draft with content → true', () => {
   assert.equal(canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:"1. B\n2. C"}]}), true);
 });
+
+// FieldValue stub so the test file can run without firebase-admin.
+const SERVER_TS = Symbol("server-ts");
+const FIELD_VALUE_STUB = { serverTimestamp: () => SERVER_TS };
+
+function makeDraftPayload({assignmentId, answersText, isCreate, FieldValue}){
+  const base = {
+    assignmentId,
+    responses: [{questionIndex: 0, studentAnswer: answersText || ""}],
+    status: "draft",
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if(isCreate){
+    base.createdAt = FieldValue.serverTimestamp();
+  }
+  return base;
+}
+
+test('makeDraftPayload: create sets createdAt + updatedAt', () => {
+  const p = makeDraftPayload({assignmentId:"asg1", answersText:"1. B", isCreate:true, FieldValue:FIELD_VALUE_STUB});
+  assert.equal(p.assignmentId, "asg1");
+  assert.equal(p.status, "draft");
+  assert.equal(p.responses.length, 1);
+  assert.equal(p.responses[0].questionIndex, 0);
+  assert.equal(p.responses[0].studentAnswer, "1. B");
+  assert.equal(p.createdAt, SERVER_TS);
+  assert.equal(p.updatedAt, SERVER_TS);
+});
+
+test('makeDraftPayload: update has updatedAt but no createdAt', () => {
+  const p = makeDraftPayload({assignmentId:"asg1", answersText:"x", isCreate:false, FieldValue:FIELD_VALUE_STUB});
+  assert.equal(p.createdAt, undefined);
+  assert.equal(p.updatedAt, SERVER_TS);
+});
+
+test('makeDraftPayload: empty answer still produces a response entry', () => {
+  const p = makeDraftPayload({assignmentId:"asg1", answersText:"", isCreate:true, FieldValue:FIELD_VALUE_STUB});
+  assert.equal(p.responses[0].studentAnswer, "");
+});
+
+test('makeDraftPayload: status is always "draft" (never submitted)', () => {
+  const p = makeDraftPayload({assignmentId:"asg1", answersText:"anything", isCreate:false, FieldValue:FIELD_VALUE_STUB});
+  assert.equal(p.status, "draft");
+});
