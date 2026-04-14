@@ -4101,6 +4101,8 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const submissionIdRef = useRef(null);
   const [localStatus, setLocalStatus] = useState("draft");
   const [submittedAt, setSubmittedAt] = useState(null);
+  const pendingTimerRef = useRef(null);
+  const writeDraftRef = useRef(null);
 
   useEffect(()=>{
     if(status !== "ready" || !submission) return;
@@ -4110,6 +4112,50 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     setLocalStatus(submission.status || "draft");
     setSubmittedAt(submission.submittedAt || null);
   }, [status, submission]);
+
+  // Fresh writeDraft closure every render so the debounced timer always sees
+  // the latest text/isLocked without re-creating the timer on every keystroke.
+  const isLockedNow = readOnly || localStatus === "submitted";
+  writeDraftRef.current = async (answersText) => {
+    if(isLockedNow) return;
+    const col = studentSubmissionsCollection(studentId);
+    if(!col) return;
+    try{
+      if(!submissionIdRef.current){
+        const newRef = col.doc();
+        submissionIdRef.current = newRef.id;
+        await newRef.set(makeDraftPayload({
+          assignmentId: assignment.id,
+          answersText,
+          isCreate: true,
+        }));
+      } else {
+        await col.doc(submissionIdRef.current).update(
+          makeDraftPayload({
+            assignmentId: assignment.id,
+            answersText,
+            isCreate: false,
+          })
+        );
+      }
+    } catch(err){
+      console.warn("[portal] draft write error:", err);
+    }
+  };
+
+  // Debounced autosave. Fires 750ms after the last keystroke. Skipped while
+  // the initial query is still loading (would race with the seed effect).
+  useEffect(()=>{
+    if(isLockedNow) return;
+    if(status !== "ready" && status !== "not-found") return;
+    if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    pendingTimerRef.current = setTimeout(()=>{
+      if(writeDraftRef.current) writeDraftRef.current(text);
+    }, 750);
+    return ()=>{
+      if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    };
+  }, [text, status, isLockedNow]);
 
   if(status === "loading"){
     return (
@@ -4129,7 +4175,7 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     );
   }
 
-  const isLocked = readOnly || localStatus === "submitted";
+  const isLocked = isLockedNow;
   const displayDate = (()=>{
     if(!submittedAt) return "";
     if(typeof submittedAt === "string") return submittedAt.slice(0,10);
