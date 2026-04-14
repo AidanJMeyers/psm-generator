@@ -501,6 +501,15 @@ const DEV_FAKE_ROLE = (()=>{
     return allowed.includes(r) ? r : null;
   }catch{ return null; }
 })();
+// Optional studentId override for portal dev bypass:
+//   ?dev=1&role=student&studentId=rnbw56f5
+// When absent and role is student/parent, the portal renders an empty state.
+const DEV_FAKE_STUDENT_ID = (()=>{
+  if(!DEV_BYPASS) return "";
+  try{
+    return new URLSearchParams(location.search).get("studentId") || "";
+  }catch{ return ""; }
+})();
 const DEV_FAKE_USER = {
   email: "dev@localhost",
   displayName: "Dev User",
@@ -512,7 +521,7 @@ const DEV_FAKE_USER = {
 const DEV_FAKE_ENTRY = {
   email: "dev@localhost",
   role: DEV_FAKE_ROLE || "tutor",
-  studentIds: [],
+  studentIds: DEV_FAKE_STUDENT_ID ? [DEV_FAKE_STUDENT_ID] : [],
   active: true,
   addedBy: "dev-bypass",
   addedAt: null,
