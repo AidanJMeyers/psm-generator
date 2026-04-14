@@ -119,3 +119,51 @@ test('buildScoreTrendsSeries: sorts ascending by date', () => {
   ]});
   assert.deepEqual(out.map(p=>p.date), ["2026-01-01","2026-02-01","2026-03-01"]);
 });
+
+function pickLatestSubmission(docs){
+  if(!Array.isArray(docs) || docs.length === 0) return null;
+  const draft = docs.find(d => d && d.status === "draft");
+  if(draft) return draft;
+  const submitted = docs.filter(d => d && d.status === "submitted");
+  if(submitted.length === 0) return null;
+  const ms = (d) => {
+    const t = d.submittedAt;
+    if(!t) return 0;
+    if(typeof t.toMillis === "function") return t.toMillis();
+    if(typeof t === "string") return Date.parse(t) || 0;
+    if(typeof t === "number") return t;
+    return 0;
+  };
+  return submitted.slice().sort((a,b)=> ms(b) - ms(a))[0];
+}
+
+test('pickLatestSubmission: empty → null', () => {
+  assert.equal(pickLatestSubmission([]), null);
+});
+
+test('pickLatestSubmission: null input → null', () => {
+  assert.equal(pickLatestSubmission(null), null);
+});
+
+test('pickLatestSubmission: single draft → draft', () => {
+  const d = {id:"a", status:"draft"};
+  assert.equal(pickLatestSubmission([d]), d);
+});
+
+test('pickLatestSubmission: draft + submitted → draft wins', () => {
+  const draft = {id:"a", status:"draft"};
+  const sub = {id:"b", status:"submitted", submittedAt:"2026-04-10T00:00:00Z"};
+  assert.equal(pickLatestSubmission([sub, draft]), draft);
+});
+
+test('pickLatestSubmission: two submitted → most recent', () => {
+  const older = {id:"a", status:"submitted", submittedAt:"2026-01-01T00:00:00Z"};
+  const newer = {id:"b", status:"submitted", submittedAt:"2026-04-01T00:00:00Z"};
+  assert.equal(pickLatestSubmission([older, newer]).id, "b");
+});
+
+test('pickLatestSubmission: only submitted, missing submittedAt → first non-null', () => {
+  const a = {id:"a", status:"submitted"};
+  const out = pickLatestSubmission([a]);
+  assert.equal(out.id, "a");
+});

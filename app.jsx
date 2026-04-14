@@ -639,6 +639,27 @@ function pickParentSelectedChildId(entry, storedId){
   return ids[0];
 }
 
+// Canonical pick across N submission docs for the same assignment. Draft
+// wins over any submitted (students can only have one open draft at a time);
+// otherwise the most recent submittedAt — Firestore Timestamps normalized via
+// toMillis, ISO strings via Date.parse.
+function pickLatestSubmission(docs){
+  if(!Array.isArray(docs) || docs.length === 0) return null;
+  const draft = docs.find(d => d && d.status === "draft");
+  if(draft) return draft;
+  const submitted = docs.filter(d => d && d.status === "submitted");
+  if(submitted.length === 0) return null;
+  const ms = (d) => {
+    const t = d.submittedAt;
+    if(!t) return 0;
+    if(typeof t.toMillis === "function") return t.toMillis();
+    if(typeof t === "string") return Date.parse(t) || 0;
+    if(typeof t === "number") return t;
+    return 0;
+  };
+  return submitted.slice().sort((a,b)=> ms(b) - ms(a))[0];
+}
+
 // Build the x-ordered points the Score Trends chart plots. A full practice
 // score is any point whose category matches the fullPts regex used in
 // ScoreHistoryPanel. Dateless / NaN points are dropped (can't be plotted).
