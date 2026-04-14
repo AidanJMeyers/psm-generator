@@ -756,6 +756,19 @@ function summarizeSubmissions(submissions){
   };
 }
 
+// Normalizes the submittedAt field (Firestore Timestamp, ISO string, or null)
+// into a YYYY-MM-DD display string. Shared by the tutor summary and row UI.
+function formatSubmittedAt(value){
+  if(!value) return "";
+  if(typeof value === "string") return value.slice(0, 10);
+  if(typeof value.toDate === "function"){
+    try { return value.toDate().toISOString().slice(0, 10); }
+    catch { return ""; }
+  }
+  if(value instanceof Date) return value.toISOString().slice(0, 10);
+  return "";
+}
+
 function canSubmitDraft(submission){
   if(!submission) return false;
   if(submission.status !== "draft") return false;

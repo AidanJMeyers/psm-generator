@@ -389,3 +389,37 @@ test('summarizeSubmissions: nullish entries filtered', () => {
   assert.equal(s.total, 1);
   assert.equal(s.correctCount, 1);
 });
+
+function formatSubmittedAt(value){
+  if(!value) return "";
+  if(typeof value === "string") return value.slice(0, 10);
+  if(typeof value.toDate === "function"){
+    try { return value.toDate().toISOString().slice(0, 10); }
+    catch { return ""; }
+  }
+  if(value instanceof Date) return value.toISOString().slice(0, 10);
+  return "";
+}
+
+test('formatSubmittedAt: null/undefined → empty', () => {
+  assert.equal(formatSubmittedAt(null), "");
+  assert.equal(formatSubmittedAt(undefined), "");
+});
+
+test('formatSubmittedAt: ISO string truncated to date', () => {
+  assert.equal(formatSubmittedAt("2026-04-14T12:34:56.000Z"), "2026-04-14");
+});
+
+test('formatSubmittedAt: Firestore Timestamp via toDate', () => {
+  const ts = { toDate: () => new Date("2026-03-01T00:00:00Z") };
+  assert.equal(formatSubmittedAt(ts), "2026-03-01");
+});
+
+test('formatSubmittedAt: JS Date', () => {
+  assert.equal(formatSubmittedAt(new Date("2026-01-15T00:00:00Z")), "2026-01-15");
+});
+
+test('formatSubmittedAt: junk → empty', () => {
+  assert.equal(formatSubmittedAt(42), "");
+  assert.equal(formatSubmittedAt({}), "");
+});
