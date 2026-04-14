@@ -1,9 +1,12 @@
 // Single source of truth for all Wise API calls.
 //
-// Session 11 scope (read-only first deploy): userByIdentifier only.
-// ensureAdminChat + sendMessage will be added after Kiran provides the
-// "Send a Message" Postman shape — intentionally NOT stubbed here so an
-// incomplete implementation can't accidentally be called.
+// Session 11 shipped:   userByIdentifierEmail (read)
+// Session 11b adds:     listAllChats, ensureAdminChat, sendChatMessage,
+//                       resolveWiseUserIdByEmail
+//
+// reconcileStudentsWithWise has its own inline call to userByIdentifierEmail
+// from Session 11. Intentionally NOT refactoring it this session — see
+// Session 11b kickoff "Do NOT touch reconcileStudentsWithWise".
 
 const NAMESPACE_UA_PREFIX = "VendorIntegrations";
 
@@ -49,4 +52,128 @@ async function userByIdentifierEmail(cfg, email) {
   return { found: true, user };
 }
 
-module.exports = { userByIdentifierEmail };
+// Wrapper around userByIdentifierEmail that returns just the Wise user id
+// (or null). Used by assignToWise and sendStudentMessage to resolve a
+// student email → Wise `_id` before any write. Kept as a separate function
+// so the reconcile inline call site in index.js stays untouched.
+async function resolveWiseUserIdByEmail(cfg, email) {
+  const lookup = await userByIdentifierEmail(cfg, email);
+  if (!lookup.found) return null;
+  return lookup.user._id || null;
+}
+
+// GET /institutes/{institute_id}/chats?chatSection=all_chats&page_number=N&page_size=M
+//
+// Returns the raw `data.chats` array for the requested page. Callers paginate
+// if they need to. Shape of each entry (verified from docs/wise_postman.md
+// §"Get All Chats" example response, Session 11b):
+//
+//   {
+//     _id: "<chatId>",
+//     chatType: "INSTITUTE" | "CLASSROOM",
+//     chatWithId: { _id: "<wiseUserId>", name, profile, profilePicture },
+//     instituteId, lastMessage, numParticipants, unreadCount, class
+//   }
+//
+// Note `chatWithId` is an *object* on list responses but a bare string on
+// get-by-id / create responses. Callers must handle both.
+async function listAllChats(cfg, { pageNumber = 1, pageSize = 50 } = {}) {
+  const url = `${cfg.host}/institutes/${cfg.instituteId}/chats`
+    + `?page_number=${pageNumber}&page_size=${pageSize}&chatSection=all_chats`;
+  const res = await fetch(url, { method: "GET", headers: wiseHeaders(cfg) });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Wise listAllChats ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const body = await res.json();
+  const chats = body && body.data && body.data.chats;
+  return Array.isArray(chats) ? chats : [];
+}
+
+// POST /institutes/{institute_id}/chats
+// Body: { chatType: "INSTITUTE", chatWithId: <wiseUserId> }
+//
+// Wire-format source: docs/wise_postman.md §"Admin Only Chat with Student"
+// (pasted into Session 11b; was missing from Session 11's copy of the doc).
+//
+// Returns the chat `_id` (string).
+async function createAdminChat(cfg, wiseUserId) {
+  const url = `${cfg.host}/institutes/${cfg.instituteId}/chats`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: wiseHeaders(cfg),
+    body: JSON.stringify({ chatType: "INSTITUTE", chatWithId: wiseUserId }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Wise createAdminChat ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const body = await res.json();
+  const chatId = body && body.data && body.data.chat && body.data.chat._id;
+  if (!chatId) {
+    throw new Error("Wise createAdminChat: missing data.chat._id in response");
+  }
+  return chatId;
+}
+
+// Idempotent: scan the first N chats for an existing INSTITUTE (admin-only)
+// chat with this Wise user. If none, create one.
+//
+// pageScanLimit is a safety cap on how many chats we page through before
+// giving up and just creating a new one. For an institute with a handful
+// of students the first page (50) is plenty; for scale-out it may need
+// bumping. Logged (via return value) so callers can surface the scan depth.
+//
+// Returns: { chatId, reused: boolean }
+async function ensureAdminChat(cfg, wiseUserId, { pageScanLimit = 5, pageSize = 50 } = {}) {
+  for (let p = 1; p <= pageScanLimit; p++) {
+    const chats = await listAllChats(cfg, { pageNumber: p, pageSize });
+    if (chats.length === 0) break;
+    for (const c of chats) {
+      if (c.chatType !== "INSTITUTE") continue;
+      // chatWithId is an object in list responses
+      const wid = c.chatWithId && (c.chatWithId._id || c.chatWithId);
+      if (wid === wiseUserId) {
+        return { chatId: c._id, reused: true };
+      }
+    }
+    if (chats.length < pageSize) break; // last page
+  }
+  const chatId = await createAdminChat(cfg, wiseUserId);
+  return { chatId, reused: false };
+}
+
+// POST /institutes/{institute_id}/chats/{chatId}/messages
+// Body: { message: "<text>" }
+//
+// Wire-format source: docs/wise_postman.md §"Send a Message" (pasted into
+// Session 11b; was missing from Session 11's copy of the doc).
+//
+// Returns `data.chatMessage._id` (string). Throws on non-2xx.
+async function sendChatMessage(cfg, chatId, message) {
+  const url = `${cfg.host}/institutes/${cfg.instituteId}/chats/${chatId}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: wiseHeaders(cfg),
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Wise sendChatMessage ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const body = await res.json();
+  const messageId = body && body.data && body.data.chatMessage && body.data.chatMessage._id;
+  if (!messageId) {
+    throw new Error("Wise sendChatMessage: missing data.chatMessage._id in response");
+  }
+  return messageId;
+}
+
+module.exports = {
+  userByIdentifierEmail,
+  resolveWiseUserIdByEmail,
+  listAllChats,
+  createAdminChat,
+  ensureAdminChat,
+  sendChatMessage,
+};
