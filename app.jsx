@@ -660,6 +660,14 @@ function pickLatestSubmission(docs){
   return submitted.slice().sort((a,b)=> ms(b) - ms(a))[0];
 }
 
+function canSubmitDraft(submission){
+  if(!submission) return false;
+  if(submission.status !== "draft") return false;
+  const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
+  const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
+  return text.length > 0;
+}
+
 // Build the x-ordered points the Score Trends chart plots. A full practice
 // score is any point whose category matches the fullPts regex used in
 // ScoreHistoryPanel. Dateless / NaN points are dropped (can't be plotted).

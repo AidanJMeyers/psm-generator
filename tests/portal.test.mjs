@@ -167,3 +167,31 @@ test('pickLatestSubmission: only submitted, missing submittedAt → first non-nu
   const out = pickLatestSubmission([a]);
   assert.equal(out.id, "a");
 });
+
+function canSubmitDraft(submission){
+  if(!submission) return false;
+  if(submission.status !== "draft") return false;
+  const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
+  const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
+  return text.length > 0;
+}
+
+test('canSubmitDraft: null → false', () => {
+  assert.equal(canSubmitDraft(null), false);
+});
+
+test('canSubmitDraft: submitted status → false', () => {
+  assert.equal(canSubmitDraft({status:"submitted", responses:[{questionIndex:0, studentAnswer:"x"}]}), false);
+});
+
+test('canSubmitDraft: draft with empty answer → false', () => {
+  assert.equal(canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:"   "}]}), false);
+});
+
+test('canSubmitDraft: draft with missing responses → false', () => {
+  assert.equal(canSubmitDraft({status:"draft"}), false);
+});
+
+test('canSubmitDraft: draft with content → true', () => {
+  assert.equal(canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:"1. B\n2. C"}]}), true);
+});
