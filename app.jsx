@@ -769,6 +769,25 @@ function formatSubmittedAt(value){
   return "";
 }
 
+// Tutor review write payload. Three-state: true/false set the field and stamp
+// reviewedAt; null clears both via FieldValue.delete() so the doc reverts to
+// "unreviewed" cleanly on reload. reviewerNotes is always written (empty
+// string if none provided) to keep the field stable.
+function makeReviewPayload({correct, reviewerNotes}){
+  const FV = firebase.firestore.FieldValue;
+  const payload = {
+    reviewerNotes: typeof reviewerNotes === "string" ? reviewerNotes : "",
+  };
+  if(correct === true || correct === false){
+    payload.correct = correct;
+    payload.reviewedAt = FV.serverTimestamp();
+  } else {
+    payload.correct = FV.delete();
+    payload.reviewedAt = FV.delete();
+  }
+  return payload;
+}
+
 function canSubmitDraft(submission){
   if(!submission) return false;
   if(submission.status !== "draft") return false;

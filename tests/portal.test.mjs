@@ -423,3 +423,52 @@ test('formatSubmittedAt: junk → empty', () => {
   assert.equal(formatSubmittedAt(42), "");
   assert.equal(formatSubmittedAt({}), "");
 });
+
+const DELETE_TS = Symbol("delete-sentinel");
+const FIELD_VALUE_STUB_V2 = {
+  serverTimestamp: () => SERVER_TS,
+  delete: () => DELETE_TS,
+};
+
+function makeReviewPayload({correct, reviewerNotes, FieldValue}){
+  const payload = {
+    reviewerNotes: typeof reviewerNotes === "string" ? reviewerNotes : "",
+  };
+  if(correct === true || correct === false){
+    payload.correct = correct;
+    payload.reviewedAt = FieldValue.serverTimestamp();
+  } else {
+    payload.correct = FieldValue.delete();
+    payload.reviewedAt = FieldValue.delete();
+  }
+  return payload;
+}
+
+test('makeReviewPayload: correct=true sets reviewedAt', () => {
+  const p = makeReviewPayload({correct:true, reviewerNotes:"nice work", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.correct, true);
+  assert.equal(p.reviewerNotes, "nice work");
+  assert.equal(p.reviewedAt, SERVER_TS);
+});
+
+test('makeReviewPayload: correct=false sets reviewedAt', () => {
+  const p = makeReviewPayload({correct:false, reviewerNotes:"", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.correct, false);
+  assert.equal(p.reviewedAt, SERVER_TS);
+});
+
+test('makeReviewPayload: correct=null clears both correct and reviewedAt', () => {
+  const p = makeReviewPayload({correct:null, reviewerNotes:"", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.correct, DELETE_TS);
+  assert.equal(p.reviewedAt, DELETE_TS);
+});
+
+test('makeReviewPayload: missing reviewerNotes coerced to empty string', () => {
+  const p = makeReviewPayload({correct:true, FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.reviewerNotes, "");
+});
+
+test('makeReviewPayload: reviewerNotes preserved verbatim (including whitespace)', () => {
+  const p = makeReviewPayload({correct:true, reviewerNotes:"  trailing  ", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.reviewerNotes, "  trailing  ");
+});
