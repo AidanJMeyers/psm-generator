@@ -944,6 +944,7 @@ const FS_DOC = "psm-data/main";
 const fsRef = ()=> window.db ? window.db.doc(FS_DOC) : null;
 // Write to Firestore (debounced to avoid rapid writes)
 let _fsWriteTimer = null;
+let _studentsBatchTimer = null;
 const fsWrite = (data)=>{
   const ref = fsRef();
   if(!ref) return;
@@ -952,6 +953,25 @@ const fsWrite = (data)=>{
     ref.set(data, {merge:true}).catch(e=>console.warn("[Firestore] write error:", e));
   }, 800);
 };
+
+// Per-student collection refs (Phase 2). Legacy FS_DOC still used for
+// customAssignments and for dual-write during DUAL_WRITE_GRACE.
+const studentsCollection = () => window.db ? window.db.collection("students") : null;
+const studentDocRef = (id) => window.db ? window.db.collection("students").doc(id) : null;
+const notesDocRef = (id) => window.db
+  ? window.db.collection("students").doc(id).collection("_private").doc("info")
+  : null;
+
+// Notes are written out-of-band from the main students batch — they change
+// rarely (only on student creation today) and mixing them into every tutor
+// state change would fire wasted writes. Notes also must never appear in
+// /students/{id} itself because that doc is student-readable.
+async function saveStudentNotes(id, notes){
+  const ref = notesDocRef(id);
+  if(!ref) return;
+  try { await ref.set({ notes: notes ?? "" }); }
+  catch(e){ console.warn("[Firestore] notes write error:", e); }
+}
 
 /* ============ AUTH GATE ============ */
 // Workspace-only Google sign-in. The firestore.rules enforce the same
@@ -966,6 +986,14 @@ const ATS_DOMAIN = "affordabletutoringsolutions.org";
 // until Phase B (rules dual-gate) is also deployed, otherwise the new flow
 // will 404 on the allowlist reads (rules still require the workspace gate).
 const USE_ALLOWLIST_AUTH = false;
+
+// Dual-write grace window for the Phase 2 schema migration. When true,
+// tutor writes go to BOTH /students/{id} (new authoritative path) and
+// psm-data/main.students[] (legacy blob). Kept on for ~24 hours post-cutover
+// so an in-window rollback is a client revert instead of a reverse
+// migration. Flipped to false manually after a clean monitoring window.
+// See docs/PHASE_2_SESSION_1.md §Cutover sequence.
+const DUAL_WRITE_GRACE = true;
 
 // Read allowlist/{emailLowercase}. Returns {role, studentIds, active, ...} or null.
 // One-shot, not a subscription — cached in React state for the session.
@@ -1636,6 +1664,10 @@ function AppInner({authUser, onSignOut, currentUserEntry}){
   const[searchQuery,setSearchQuery]=useState("");
   const searchInputRef=useRef(null);
   const[newS,setNewS]=useState({name:"",grade:"",tutor:"",notes:""});
+  // Tutor-only notes for the currently open profile. Hydrated from
+  // /students/{id}/_private/info on openProfile because notes aren't
+  // included in the students[] array post-Phase-2.
+  const[profileNotes,setProfileNotes]=useState("");
   const[ptab,setPtab]=useState("history");
   const[paChk,setPaChk]=useState({});
   const[paSubj,setPaSubj]=useState("All");
@@ -1655,47 +1687,73 @@ function AppInner({authUser, onSignOut, currentUserEntry}){
   // Track whether current state came from Firestore (prevent write-back loops)
   const _fromFirestore = useRef(false);
 
-  // ── Firestore real-time sync ──
+  // ── Firestore real-time sync (Phase 2 — per-student docs + legacy blob) ──
+  // Two listeners: /students is authoritative for student rows; psm-data/main
+  // carries customAssignments (and, during DUAL_WRITE_GRACE, a mirror of
+  // students[] that we ignore on read). The `notes` field is NOT hydrated
+  // into students[] here — it lives in /students/{id}/_private/info and is
+  // read lazily when a tutor opens a profile.
   useEffect(()=>{
-    const ref = fsRef();
-    if(!ref){
+    const col = studentsCollection();
+    const blobRef = fsRef();
+    if(!col || !blobRef){
       setCloudStatus("offline");
       console.log("[Firestore] No db available, using localStorage only");
       return;
     }
-    // Subscribe to real-time updates
-    const unsub = ref.onSnapshot((snap)=>{
-      if(snap.exists){
-        const data = snap.data();
-        _fromFirestore.current = true;
-        if(data.students) setStudents(data.students);
-        if(data.customAssignments) setCustomAssignments(data.customAssignments);
-        _fromFirestore.current = false;
-        setCloudStatus("synced");
-        // Also update localStorage as offline cache
-        if(data.students) sSave("psm_v4", data.students);
-        if(data.customAssignments) sSave("psm_custom_asg", data.customAssignments);
-      } else {
-        // Firestore doc doesn't exist yet — seed from localStorage (migration)
-        console.log("[Firestore] No cloud data found, seeding from localStorage...");
-        const localStudents = sLoad("psm_v4", sLoad("psm_v3", []));
-        const localCustom = sLoad("psm_custom_asg", []);
-        ref.set({students: localStudents, customAssignments: localCustom})
-          .then(()=>{console.log("[Firestore] Seeded successfully"); setCloudStatus("synced");})
-          .catch(e=>{console.warn("[Firestore] Seed failed:", e); setCloudStatus("offline");});
-      }
+
+    const unsubStudents = col.onSnapshot((snap)=>{
+      const next = snap.docs.map(d=>{
+        const data = d.data() || {};
+        return { ...data, id: data.id || d.id };
+      });
+      _fromFirestore.current = true;
+      setStudents(next);
+      _fromFirestore.current = false;
+      setCloudStatus("synced");
+      sSave("psm_v4", next);
     }, (err)=>{
-      console.warn("[Firestore] Listen error:", err);
+      console.warn("[Firestore] students listen error:", err);
       setCloudStatus("offline");
     });
-    return ()=>unsub();
+
+    const unsubBlob = blobRef.onSnapshot((snap)=>{
+      if(!snap.exists) return;
+      const data = snap.data() || {};
+      if(data.customAssignments){
+        _fromFirestore.current = true;
+        setCustomAssignments(data.customAssignments);
+        _fromFirestore.current = false;
+        sSave("psm_custom_asg", data.customAssignments);
+      }
+    }, (err)=>{
+      console.warn("[Firestore] blob listen error:", err);
+    });
+
+    return ()=>{ unsubStudents(); unsubBlob(); };
   }, []);
 
-  // ── Write to Firestore on state changes (skip if change came from Firestore) ──
+  // ── Write students: per-doc batch to /students, dual-write to blob ──
   useEffect(()=>{
     if(_fromFirestore.current) return;
-    sSave("psm_v4", students); // always cache locally
-    fsWrite({students});
+    sSave("psm_v4", students);
+
+    if(_studentsBatchTimer) clearTimeout(_studentsBatchTimer);
+    _studentsBatchTimer = setTimeout(()=>{
+      const db = window.db;
+      if(!db) return;
+      const batch = db.batch();
+      students.forEach(s=>{
+        if(!s || !s.id) return;
+        // Strip `notes` before writing — notes live in /_private/info
+        // and would bleed tutor-only data into the student-readable doc.
+        const { notes, ...rest } = s;
+        batch.set(db.collection("students").doc(s.id), rest);
+      });
+      batch.commit().catch(e=>console.warn("[Firestore] students batch error:", e));
+
+      if(DUAL_WRITE_GRACE) fsWrite({students});
+    }, 800);
   },[students]);
 
   useEffect(()=>{
@@ -2150,8 +2208,31 @@ function AppInner({authUser, onSignOut, currentUserEntry}){
     doc.save(`PSM_${safeName}_${todayStr()}.pdf`);
     showToast("PDF downloaded");
   };
-  const addStudent=()=>{if(!newS.name.trim())return;setStudents(prev=>[...prev,{...newS,id:uid(),dateAdded:todayStr(),assignments:[],scores:[],diagnostics:[]}]);setNewS({name:"",grade:"",tutor:"",notes:""});setShowAdd(false);showToast("Student added");};
-  const openProfile=(st)=>{setProfile(st);setPtab("history");setPaChk({});setPaSubj("All");setPaSrch("");setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});setTab("students");};
+  const addStudent=()=>{
+    if(!newS.name.trim())return;
+    const newId=uid();
+    const notesValue=newS.notes;
+    setStudents(prev=>[...prev,{...newS,id:newId,dateAdded:todayStr(),assignments:[],scores:[],diagnostics:[]}]);
+    // Notes live in /_private/info, not in the students[] batch.
+    saveStudentNotes(newId, notesValue);
+    setNewS({name:"",grade:"",tutor:"",notes:""});
+    setShowAdd(false);
+    showToast("Student added");
+  };
+  const openProfile=(st)=>{
+    setProfile(st);
+    setPtab("history");
+    setPaChk({});
+    setPaSubj("All");
+    setPaSrch("");
+    setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});
+    setTab("students");
+    setProfileNotes("");
+    const ref=notesDocRef(st.id);
+    if(ref) ref.get()
+      .then(snap=>{ if(snap.exists) setProfileNotes(snap.data().notes || ""); })
+      .catch(e=>console.warn("[Firestore] notes read error:", e));
+  };
 
   const savePreAssign=()=>{
     const ids=Object.keys(paChk).filter(k=>paChk[k]);
@@ -3595,7 +3676,7 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
               {p.grade&&<span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.28)"}}>Grade {p.grade}</span>}
               {p.tutor&&<span style={{...mkPill("transparent","#4C7A4C"),border:"1px solid rgba(76,122,76,.35)"}}>{p.tutor}</span>}
               <span style={{...mkPill("transparent","#2E3A57"),border:"1px solid rgba(15,26,46,.18)"}}>Since {p.dateAdded}</span>
-              {p.notes&&<span style={{...mkPill("transparent","#6E3F12"),border:"1px solid rgba(154,91,31,.35)"}}>{p.notes}</span>}
+              {profileNotes&&<span style={{...mkPill("transparent","#6E3F12"),border:"1px solid rgba(154,91,31,.35)"}}>{profileNotes}</span>}
             </div>
           </div>
           <div style={{display:"flex",gap:0,borderLeft:"1px solid rgba(15,26,46,.1)"}}>
