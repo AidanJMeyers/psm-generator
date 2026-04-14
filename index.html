@@ -1437,25 +1437,43 @@ function groupSubmissionsByAssignment(submissions, assignments){
   return groups;
 }
 
-// Counts that drive the missed-question header card. Drafts are excluded
-// from reviewed/correct/incorrect counts because they can't be graded yet
-// (the student hasn't finalized them). `missed` is the subset of submitted
-// docs marked incorrect, in encounter order.
+// "Reviewed" means the tutor has recorded both scoreCorrect and scoreTotal
+// on the submission. scoreTotal of 0 is treated as unreviewed to guard the
+// percent-correct division below.
+function isSubmissionReviewed(sub){
+  return sub
+    && typeof sub.scoreTotal === "number"
+    && sub.scoreTotal > 0
+    && typeof sub.scoreCorrect === "number";
+}
+
+// Rolling totals across all reviewed submissions for this student. Drafts and
+// unreviewed-submitted docs don't contribute to the question counts — they
+// surface separately so the tutor knows there's work left.
 function summarizeSubmissions(submissions){
   const list = Array.isArray(submissions) ? submissions.filter(Boolean) : [];
   const drafts = list.filter(s => s.status === "draft");
   const submitted = list.filter(s => s.status === "submitted");
-  const correct = submitted.filter(s => s.correct === true);
-  const incorrect = submitted.filter(s => s.correct === false);
-  const unreviewed = submitted.filter(s => s.correct !== true && s.correct !== false);
+  const reviewed = submitted.filter(isSubmissionReviewed);
+  const unreviewed = submitted.filter(s => !isSubmissionReviewed(s));
+  const missed = reviewed.filter(s => s.scoreCorrect < s.scoreTotal);
+  const totalQuestions = reviewed.reduce((n,s)=>n + s.scoreTotal, 0);
+  const totalCorrect = reviewed.reduce((n,s)=>n + s.scoreCorrect, 0);
+  const totalMissed = totalQuestions - totalCorrect;
+  const percentCorrect = totalQuestions > 0
+    ? Math.round((totalCorrect / totalQuestions) * 100)
+    : null;
   return {
     total: list.length,
     submittedCount: submitted.length,
     draftCount: drafts.length,
-    correctCount: correct.length,
-    incorrectCount: incorrect.length,
+    reviewedCount: reviewed.length,
     unreviewedCount: unreviewed.length,
-    missed: incorrect,
+    totalQuestions,
+    totalCorrect,
+    totalMissed,
+    percentCorrect,
+    missed,
   };
 }
 
@@ -1472,20 +1490,25 @@ function formatSubmittedAt(value){
   return "";
 }
 
-// Tutor review write payload. Three-state: true/false set the field and stamp
-// reviewedAt; null clears both via FieldValue.delete() so the doc reverts to
-// "unreviewed" cleanly on reload. reviewerNotes is always written (empty
-// string if none provided) to keep the field stable.
-function makeReviewPayload({correct, reviewerNotes}){
+// Tutor review write payload. Numeric scope: scoreCorrect/scoreTotal describe
+// "N correct out of M" per submission. Passing null/undefined/zero-total clears
+// all three review fields so the doc reverts to unreviewed cleanly on reload.
+// reviewerNotes is always written so empty-string clears propagate.
+function makeReviewPayload({scoreCorrect, scoreTotal, reviewerNotes}){
   const FV = firebase.firestore.FieldValue;
   const payload = {
     reviewerNotes: typeof reviewerNotes === "string" ? reviewerNotes : "",
   };
-  if(correct === true || correct === false){
-    payload.correct = correct;
+  const hasScore = typeof scoreCorrect === "number"
+    && typeof scoreTotal === "number"
+    && scoreTotal > 0;
+  if(hasScore){
+    payload.scoreCorrect = Math.max(0, Math.min(scoreCorrect, scoreTotal));
+    payload.scoreTotal = scoreTotal;
     payload.reviewedAt = FV.serverTimestamp();
   } else {
-    payload.correct = FV.delete();
+    payload.scoreCorrect = FV.delete();
+    payload.scoreTotal = FV.delete();
     payload.reviewedAt = FV.delete();
   }
   return payload;
@@ -5288,8 +5311,23 @@ function LineChart({points, color="#004A79", max, height=80, width=260}){
 }
 
 /* ============ TUTOR SUBMISSIONS PANEL (Phase 2 Session 6) ============ */
+function TutorSummaryStat({value, label, tone}){
+  return (
+    <div style={{textAlign:"left"}}>
+      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:26,fontWeight:600,color:tone||"#0F1A2E",letterSpacing:-.3,lineHeight:1,fontVariantNumeric:"tabular-nums"}}>{value}</div>
+      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1.2,textTransform:"uppercase",marginTop:6,fontWeight:500}}>{label}</div>
+    </div>
+  );
+}
+
 function TutorSubmissionsPanel({student}){
   const {status, submissions, error} = useTutorSubmissions(student.id);
+  const groups = useMemo(
+    ()=>groupSubmissionsByAssignment(submissions, student.assignments||[]),
+    [submissions, student.assignments]
+  );
+  const summary = useMemo(()=>summarizeSubmissions(submissions), [submissions]);
+
   if(status === "loading"){
     return (
       <div style={{...CARD, padding:"60px 40px", textAlign:"center"}}>
@@ -5313,11 +5351,245 @@ function TutorSubmissionsPanel({student}){
       </div>
     );
   }
+
   return (
-    <div style={{...CARD, padding:20}}>
-      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#66708A",letterSpacing:1,textTransform:"uppercase"}}>
-        {submissions.length} submission{submissions.length===1?"":"s"} — full UI in Task 7
+    <div>
+      {/* Summary header — missed-question report lives here by design (see plan) */}
+      <div style={{...CARD, padding:"20px 22px", marginBottom:16}}>
+        <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,fontWeight:600,letterSpacing:1.4,color:"#66708A",textTransform:"uppercase",marginBottom:12}}>Missed-Question Report</div>
+        <div style={{display:"flex",gap:28,flexWrap:"wrap",alignItems:"baseline"}}>
+          <TutorSummaryStat value={summary.totalCorrect} label="Questions correct" tone="#4C7A4C"/>
+          <TutorSummaryStat value={summary.totalMissed} label="Questions missed" tone="#8C2E2E"/>
+          <TutorSummaryStat value={summary.totalQuestions} label="Questions attempted"/>
+          <TutorSummaryStat value={summary.percentCorrect===null?"—":`${summary.percentCorrect}%`} label="Percent correct"/>
+          <TutorSummaryStat value={summary.unreviewedCount} label="Unreviewed attempts" tone="#9A5B1F"/>
+          {summary.draftCount>0 && <TutorSummaryStat value={summary.draftCount} label="In progress" tone="#66708A"/>}
+        </div>
+        {summary.reviewedCount===0 && summary.submittedCount>0 && (
+          <div style={{marginTop:14,fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:13,color:"#66708A"}}>
+            No attempts reviewed yet — enter a score on each submission below to populate this report.
+          </div>
+        )}
       </div>
+
+      {/* Grouped list */}
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {groups.map(group => (
+          <div key={group.assignmentId} style={{...CARD, padding:20}}>
+            <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:14,paddingBottom:12,borderBottom:"1px solid rgba(15,26,46,.08)",gap:12,flexWrap:"wrap"}}>
+              <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:18,fontWeight:600,color:"#0F1A2E",letterSpacing:-.2}}>
+                {group.assignment
+                  ? (group.assignment.date || group.assignment.dateAssigned || "Undated session")
+                  : "Orphaned submissions (assignment deleted)"}
+              </div>
+              <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1,textTransform:"uppercase"}}>
+                {group.submissions.length} attempt{group.submissions.length===1?"":"s"}
+              </div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:16}}>
+              {group.submissions.map(sub => (
+                <TutorSubmissionRow key={sub.id} studentId={student.id} submission={sub}/>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TutorSubmissionRow({studentId, submission}){
+  const isDraft = submission.status === "draft";
+  const isReviewed = isSubmissionReviewed(submission);
+  const answerText = (()=>{
+    const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
+    return (r && typeof r.studentAnswer === "string") ? r.studentAnswer : "";
+  })();
+
+  // Local inputs seed from the doc. Empty string is the "unset" sentinel so
+  // the placeholder shows through.
+  const [correctInput, setCorrectInput] = useState(
+    typeof submission.scoreCorrect === "number" ? String(submission.scoreCorrect) : ""
+  );
+  const [totalInput, setTotalInput] = useState(
+    typeof submission.scoreTotal === "number" ? String(submission.scoreTotal) : ""
+  );
+  const [notes, setNotes] = useState(submission.reviewerNotes || "");
+  const [saving, setSaving] = useState(false);
+
+  // Reseed from the live doc if another session updated it while open.
+  const lastSyncRef = useRef({
+    sc: submission.scoreCorrect,
+    st: submission.scoreTotal,
+    notes: submission.reviewerNotes || "",
+  });
+  useEffect(()=>{
+    const prev = lastSyncRef.current;
+    const incomingNotes = submission.reviewerNotes || "";
+    if(prev.sc !== submission.scoreCorrect){
+      setCorrectInput(typeof submission.scoreCorrect === "number" ? String(submission.scoreCorrect) : "");
+    }
+    if(prev.st !== submission.scoreTotal){
+      setTotalInput(typeof submission.scoreTotal === "number" ? String(submission.scoreTotal) : "");
+    }
+    if(prev.notes !== incomingNotes){
+      setNotes(incomingNotes);
+    }
+    lastSyncRef.current = {sc:submission.scoreCorrect, st:submission.scoreTotal, notes:incomingNotes};
+  }, [submission.scoreCorrect, submission.scoreTotal, submission.reviewerNotes]);
+
+  const parsedCorrect = correctInput === "" ? null : Number(correctInput);
+  const parsedTotal = totalInput === "" ? null : Number(totalInput);
+  const canSaveScore = parsedCorrect !== null
+    && parsedTotal !== null
+    && Number.isFinite(parsedCorrect)
+    && Number.isFinite(parsedTotal)
+    && parsedTotal > 0
+    && parsedCorrect >= 0
+    && parsedCorrect <= parsedTotal;
+
+  const saveReview = async () => {
+    if(saving || !canSaveScore) return;
+    setSaving(true);
+    try{
+      await studentSubmissionsCollection(studentId).doc(submission.id).update(
+        makeReviewPayload({
+          scoreCorrect: parsedCorrect,
+          scoreTotal: parsedTotal,
+          reviewerNotes: notes,
+        })
+      );
+    } catch(err){
+      console.warn("[tutor] review write error:", err);
+      alert("Couldn't save review. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearReview = async () => {
+    if(saving) return;
+    setSaving(true);
+    try{
+      await studentSubmissionsCollection(studentId).doc(submission.id).update(
+        makeReviewPayload({scoreCorrect:null, scoreTotal:null, reviewerNotes: notes})
+      );
+      setCorrectInput("");
+      setTotalInput("");
+    } catch(err){
+      console.warn("[tutor] clear review error:", err);
+      alert("Couldn't clear review. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveNotesOnly = async () => {
+    if(saving) return;
+    setSaving(true);
+    try{
+      // Preserve the existing score on notes-only saves.
+      const keepCorrect = isReviewed ? submission.scoreCorrect : null;
+      const keepTotal = isReviewed ? submission.scoreTotal : null;
+      await studentSubmissionsCollection(studentId).doc(submission.id).update(
+        makeReviewPayload({scoreCorrect:keepCorrect, scoreTotal:keepTotal, reviewerNotes: notes})
+      );
+    } catch(err){
+      console.warn("[tutor] notes save error:", err);
+      alert("Couldn't save notes. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Pill: draft = gray, perfect = green, any miss = red, unreviewed = orange.
+  const missedCount = isReviewed ? (submission.scoreTotal - submission.scoreCorrect) : 0;
+  const pillTone = isDraft
+    ? "#66708A"
+    : isReviewed
+      ? (missedCount === 0 ? "#4C7A4C" : "#8C2E2E")
+      : "#9A5B1F";
+  const pillBorder = isDraft
+    ? "rgba(102,112,138,.35)"
+    : isReviewed
+      ? (missedCount === 0 ? "rgba(76,122,76,.4)" : "rgba(140,46,46,.4)")
+      : "rgba(154,91,31,.4)";
+  const pillLabel = isDraft
+    ? "Draft — in progress"
+    : isReviewed
+      ? `${submission.scoreCorrect} / ${submission.scoreTotal} — ${formatSubmittedAt(submission.submittedAt)||"submitted"}`
+      : `Unreviewed — ${formatSubmittedAt(submission.submittedAt)||"submitted"}`;
+
+  const numInputStyle = {
+    width:64, padding:"6px 8px", borderRadius:3,
+    border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
+    fontSize:13, textAlign:"right", fontVariantNumeric:"tabular-nums",
+    background:"#fff",
+  };
+
+  return (
+    <div style={{padding:"14px 0",borderTop:"1px solid rgba(15,26,46,.06)",opacity:isDraft?0.65:1}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <span style={{...mkPill("transparent",pillTone),border:`1px solid ${pillBorder}`}}>{pillLabel}</span>
+        {isReviewed && missedCount > 0 && (
+          <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#8C2E2E",letterSpacing:.4,textTransform:"uppercase"}}>
+            {missedCount} missed
+          </span>
+        )}
+      </div>
+      <div style={{whiteSpace:"pre-wrap",fontFamily:"'Fraunces',Georgia,serif",fontSize:14,color:"#0F1A2E",lineHeight:1.55,padding:"10px 14px",background:"#FAF7F2",borderRadius:4,border:"1px solid rgba(15,26,46,.08)"}}>
+        {answerText || <span style={{color:"#66708A",fontStyle:"italic"}}>No answer text.</span>}
+      </div>
+      {!isDraft && (
+        <div style={{marginTop:12,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1.2,textTransform:"uppercase"}}>Score</span>
+          <input
+            type="number" min="0" step="1" placeholder="0"
+            value={correctInput}
+            onChange={e=>setCorrectInput(e.target.value)}
+            disabled={saving}
+            style={numInputStyle}
+          />
+          <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:14,color:"#66708A"}}>/</span>
+          <input
+            type="number" min="1" step="1" placeholder="10"
+            value={totalInput}
+            onChange={e=>setTotalInput(e.target.value)}
+            disabled={saving}
+            style={numInputStyle}
+          />
+          <button
+            disabled={saving || !canSaveScore}
+            onClick={saveReview}
+            style={{...mkBtn(B2,"#FAF7F2"),padding:"6px 14px",fontSize:10,letterSpacing:.4,textTransform:"uppercase",opacity:(saving||!canSaveScore)?0.5:1}}
+          >Save review</button>
+          {isReviewed && (
+            <button
+              disabled={saving}
+              onClick={clearReview}
+              style={{...mkBtn("transparent","#66708A"),border:"1px solid rgba(15,26,46,.18)",padding:"6px 14px",fontSize:10,letterSpacing:.4,textTransform:"uppercase"}}
+            >Clear</button>
+          )}
+        </div>
+      )}
+      {!isDraft && (
+        <div style={{marginTop:12}}>
+          <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1.2,textTransform:"uppercase",marginBottom:6}}>Tutor notes</div>
+          <textarea
+            value={notes}
+            onChange={e=>setNotes(e.target.value)}
+            placeholder="Which questions were missed? What to work on next?"
+            style={{width:"100%",minHeight:68,padding:"10px 12px",borderRadius:4,border:"1px solid rgba(15,26,46,.18)",fontFamily:"'IBM Plex Sans',system-ui,sans-serif",fontSize:12,lineHeight:1.5,color:"#0F1A2E",resize:"vertical",boxSizing:"border-box"}}
+          />
+          <div style={{marginTop:8,display:"flex",justifyContent:"flex-end"}}>
+            <button
+              disabled={saving || notes === (submission.reviewerNotes||"")}
+              onClick={saveNotesOnly}
+              style={{...mkBtn("transparent","#0F1A2E"),border:"1px solid rgba(15,26,46,.25)",padding:"6px 14px",fontSize:10,letterSpacing:.4,textTransform:"uppercase",opacity:(saving||notes===(submission.reviewerNotes||""))?0.5:1}}
+            >Save notes</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

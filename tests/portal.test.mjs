@@ -321,73 +321,111 @@ test('groupSubmissionsByAssignment: submissions without assignmentId bucketed as
   assert.equal(g[0].assignment, null);
 });
 
+function isReviewed(sub){
+  return sub
+    && typeof sub.scoreTotal === "number"
+    && sub.scoreTotal > 0
+    && typeof sub.scoreCorrect === "number";
+}
+
 function summarizeSubmissions(submissions){
   const list = Array.isArray(submissions) ? submissions.filter(Boolean) : [];
   const drafts = list.filter(s => s.status === "draft");
   const submitted = list.filter(s => s.status === "submitted");
-  const correct = submitted.filter(s => s.correct === true);
-  const incorrect = submitted.filter(s => s.correct === false);
-  const unreviewed = submitted.filter(s => s.correct !== true && s.correct !== false);
+  const reviewed = submitted.filter(isReviewed);
+  const unreviewed = submitted.filter(s => !isReviewed(s));
+  const missed = reviewed.filter(s => s.scoreCorrect < s.scoreTotal);
+  const totalQuestions = reviewed.reduce((n,s)=>n + s.scoreTotal, 0);
+  const totalCorrect = reviewed.reduce((n,s)=>n + s.scoreCorrect, 0);
+  const totalMissed = totalQuestions - totalCorrect;
+  const percentCorrect = totalQuestions > 0
+    ? Math.round((totalCorrect / totalQuestions) * 100)
+    : null;
   return {
     total: list.length,
     submittedCount: submitted.length,
     draftCount: drafts.length,
-    correctCount: correct.length,
-    incorrectCount: incorrect.length,
+    reviewedCount: reviewed.length,
     unreviewedCount: unreviewed.length,
-    missed: incorrect,
+    totalQuestions,
+    totalCorrect,
+    totalMissed,
+    percentCorrect,
+    missed,
   };
 }
 
-test('summarizeSubmissions: empty → all zeros', () => {
+test('summarizeSubmissions: empty → zeros and null percent', () => {
   const s = summarizeSubmissions([]);
   assert.equal(s.total, 0);
   assert.equal(s.submittedCount, 0);
-  assert.equal(s.correctCount, 0);
-  assert.equal(s.incorrectCount, 0);
+  assert.equal(s.reviewedCount, 0);
   assert.equal(s.unreviewedCount, 0);
-  assert.equal(s.draftCount, 0);
+  assert.equal(s.totalQuestions, 0);
+  assert.equal(s.totalCorrect, 0);
+  assert.equal(s.totalMissed, 0);
+  assert.equal(s.percentCorrect, null);
   assert.deepEqual(s.missed, []);
 });
 
-test('summarizeSubmissions: draft excluded from reviewed counts but counted in total', () => {
+test('summarizeSubmissions: draft excluded from submitted and reviewed', () => {
   const s = summarizeSubmissions([{status:"draft"}]);
   assert.equal(s.total, 1);
   assert.equal(s.draftCount, 1);
   assert.equal(s.submittedCount, 0);
+  assert.equal(s.reviewedCount, 0);
   assert.equal(s.unreviewedCount, 0);
 });
 
-test('summarizeSubmissions: submitted without correct field is unreviewed', () => {
+test('summarizeSubmissions: submitted without scoreTotal is unreviewed', () => {
   const s = summarizeSubmissions([{status:"submitted"}]);
   assert.equal(s.submittedCount, 1);
   assert.equal(s.unreviewedCount, 1);
-  assert.equal(s.correctCount, 0);
-  assert.equal(s.incorrectCount, 0);
+  assert.equal(s.reviewedCount, 0);
 });
 
-test('summarizeSubmissions: correct true/false split', () => {
+test('summarizeSubmissions: aggregates across reviewed submissions', () => {
   const s = summarizeSubmissions([
-    {id:"a", status:"submitted", correct:true},
-    {id:"b", status:"submitted", correct:false},
-    {id:"c", status:"submitted", correct:false},
-    {id:"d", status:"submitted"},
-    {id:"e", status:"draft"},
+    {id:"a", status:"submitted", scoreCorrect:10, scoreTotal:10}, // perfect
+    {id:"b", status:"submitted", scoreCorrect:7,  scoreTotal:10}, // missed 3
+    {id:"c", status:"submitted", scoreCorrect:4,  scoreTotal:8},  // missed 4
+    {id:"d", status:"submitted"},                                  // unreviewed
+    {id:"e", status:"draft"},                                      // draft
   ]);
   assert.equal(s.total, 5);
   assert.equal(s.submittedCount, 4);
   assert.equal(s.draftCount, 1);
-  assert.equal(s.correctCount, 1);
-  assert.equal(s.incorrectCount, 2);
+  assert.equal(s.reviewedCount, 3);
   assert.equal(s.unreviewedCount, 1);
+  assert.equal(s.totalQuestions, 28);
+  assert.equal(s.totalCorrect, 21);
+  assert.equal(s.totalMissed, 7);
+  assert.equal(s.percentCorrect, 75);
   assert.equal(s.missed.length, 2);
   assert.deepEqual(s.missed.map(x=>x.id), ["b","c"]);
 });
 
+test('summarizeSubmissions: perfect score not in missed list', () => {
+  const s = summarizeSubmissions([
+    {status:"submitted", scoreCorrect:5, scoreTotal:5},
+  ]);
+  assert.equal(s.reviewedCount, 1);
+  assert.equal(s.totalMissed, 0);
+  assert.equal(s.percentCorrect, 100);
+  assert.deepEqual(s.missed, []);
+});
+
 test('summarizeSubmissions: nullish entries filtered', () => {
-  const s = summarizeSubmissions([null, undefined, {status:"submitted", correct:true}]);
+  const s = summarizeSubmissions([null, undefined, {status:"submitted", scoreCorrect:3, scoreTotal:5}]);
   assert.equal(s.total, 1);
-  assert.equal(s.correctCount, 1);
+  assert.equal(s.reviewedCount, 1);
+  assert.equal(s.totalCorrect, 3);
+});
+
+test('summarizeSubmissions: scoreTotal of 0 is not reviewed (guards div-by-zero)', () => {
+  const s = summarizeSubmissions([{status:"submitted", scoreCorrect:0, scoreTotal:0}]);
+  assert.equal(s.reviewedCount, 0);
+  assert.equal(s.unreviewedCount, 1);
 });
 
 function formatSubmittedAt(value){
@@ -430,45 +468,69 @@ const FIELD_VALUE_STUB_V2 = {
   delete: () => DELETE_TS,
 };
 
-function makeReviewPayload({correct, reviewerNotes, FieldValue}){
+// Tutor review write payload. Numeric scope: scoreCorrect/scoreTotal
+// describe "N correct out of M" per submission. Both null (the "clear" path)
+// deletes the fields and reviewedAt so the doc reverts to unreviewed.
+// reviewerNotes is always written so empty-string clears propagate cleanly.
+function makeReviewPayload({scoreCorrect, scoreTotal, reviewerNotes, FieldValue}){
   const payload = {
     reviewerNotes: typeof reviewerNotes === "string" ? reviewerNotes : "",
   };
-  if(correct === true || correct === false){
-    payload.correct = correct;
+  const hasScore = typeof scoreCorrect === "number"
+    && typeof scoreTotal === "number"
+    && scoreTotal > 0;
+  if(hasScore){
+    payload.scoreCorrect = Math.max(0, Math.min(scoreCorrect, scoreTotal));
+    payload.scoreTotal = scoreTotal;
     payload.reviewedAt = FieldValue.serverTimestamp();
   } else {
-    payload.correct = FieldValue.delete();
+    payload.scoreCorrect = FieldValue.delete();
+    payload.scoreTotal = FieldValue.delete();
     payload.reviewedAt = FieldValue.delete();
   }
   return payload;
 }
 
-test('makeReviewPayload: correct=true sets reviewedAt', () => {
-  const p = makeReviewPayload({correct:true, reviewerNotes:"nice work", FieldValue:FIELD_VALUE_STUB_V2});
-  assert.equal(p.correct, true);
-  assert.equal(p.reviewerNotes, "nice work");
+test('makeReviewPayload: numeric score sets reviewedAt', () => {
+  const p = makeReviewPayload({scoreCorrect:7, scoreTotal:10, reviewerNotes:"nice", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.scoreCorrect, 7);
+  assert.equal(p.scoreTotal, 10);
+  assert.equal(p.reviewerNotes, "nice");
   assert.equal(p.reviewedAt, SERVER_TS);
 });
 
-test('makeReviewPayload: correct=false sets reviewedAt', () => {
-  const p = makeReviewPayload({correct:false, reviewerNotes:"", FieldValue:FIELD_VALUE_STUB_V2});
-  assert.equal(p.correct, false);
-  assert.equal(p.reviewedAt, SERVER_TS);
+test('makeReviewPayload: perfect score preserved', () => {
+  const p = makeReviewPayload({scoreCorrect:10, scoreTotal:10, FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.scoreCorrect, 10);
+  assert.equal(p.scoreTotal, 10);
 });
 
-test('makeReviewPayload: correct=null clears both correct and reviewedAt', () => {
-  const p = makeReviewPayload({correct:null, reviewerNotes:"", FieldValue:FIELD_VALUE_STUB_V2});
-  assert.equal(p.correct, DELETE_TS);
+test('makeReviewPayload: scoreCorrect clamped to [0, scoreTotal]', () => {
+  const hi = makeReviewPayload({scoreCorrect:12, scoreTotal:10, FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(hi.scoreCorrect, 10);
+  const lo = makeReviewPayload({scoreCorrect:-3, scoreTotal:10, FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(lo.scoreCorrect, 0);
+});
+
+test('makeReviewPayload: null scores clear all three review fields', () => {
+  const p = makeReviewPayload({scoreCorrect:null, scoreTotal:null, reviewerNotes:"", FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.scoreCorrect, DELETE_TS);
+  assert.equal(p.scoreTotal, DELETE_TS);
   assert.equal(p.reviewedAt, DELETE_TS);
 });
 
+test('makeReviewPayload: scoreTotal of 0 treated as clear (prevents div-by-zero)', () => {
+  const p = makeReviewPayload({scoreCorrect:0, scoreTotal:0, FieldValue:FIELD_VALUE_STUB_V2});
+  assert.equal(p.scoreCorrect, DELETE_TS);
+  assert.equal(p.scoreTotal, DELETE_TS);
+});
+
 test('makeReviewPayload: missing reviewerNotes coerced to empty string', () => {
-  const p = makeReviewPayload({correct:true, FieldValue:FIELD_VALUE_STUB_V2});
+  const p = makeReviewPayload({scoreCorrect:5, scoreTotal:5, FieldValue:FIELD_VALUE_STUB_V2});
   assert.equal(p.reviewerNotes, "");
 });
 
 test('makeReviewPayload: reviewerNotes preserved verbatim (including whitespace)', () => {
-  const p = makeReviewPayload({correct:true, reviewerNotes:"  trailing  ", FieldValue:FIELD_VALUE_STUB_V2});
+  const p = makeReviewPayload({scoreCorrect:5, scoreTotal:5, reviewerNotes:"  trailing  ", FieldValue:FIELD_VALUE_STUB_V2});
   assert.equal(p.reviewerNotes, "  trailing  ");
 });
