@@ -655,6 +655,14 @@ function buildScoreTrendsSeries(student){
 // gates which app renders.
 function RoleRouter({authUser, onSignOut, currentUserEntry}){
   const role = currentUserEntry?.role || null;
+  if(role === "parent"){
+    const ids = Array.isArray(currentUserEntry?.studentIds) ? currentUserEntry.studentIds : [];
+    if(ids.length > 1){
+      return <ParentPortal onSignOut={onSignOut} currentUserEntry={currentUserEntry}/>;
+    }
+    // Single-child or zero-child parent falls through to the same
+    // single-student path students use.
+  }
   if(role === "student" || role === "parent"){
     const studentId = pickPortalStudentId(currentUserEntry);
     return <StudentPortal studentId={studentId} onSignOut={onSignOut} currentUserEntry={currentUserEntry}/>;
