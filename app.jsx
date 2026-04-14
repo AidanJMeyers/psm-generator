@@ -483,14 +483,10 @@ function usePortalChildrenMeta(studentIds){
 }
 
 /* ============ AUTH GATE ============ */
-// Workspace-only Google sign-in. The firestore.rules enforce the same
-// domain check server-side — this component is UX, not security.
-const ATS_DOMAIN = "affordabletutoringsolutions.org";
-
-// ── Allowlist auth ────────────────────────────────────────────────────────
-// Live since Phase 2 Session 7. Flag and its gated branches scheduled
-// for removal in Phase 3 cleanup.
-const USE_ALLOWLIST_AUTH = true;
+// Allowlist-based auth. Any signed-in, email-verified Firebase Auth user
+// whose lowercased email appears as an active `allowlist/{email}` doc is
+// granted access; their role and linked student ids are read from that
+// doc. Enforced server-side by firestore.rules. This component is UX.
 
 // Dual-write grace window for the Phase 2 schema migration. When true,
 // tutor writes go to BOTH /students/{id} (new authoritative path) and
@@ -567,7 +563,38 @@ function LockoutScreen({email, onSignOut}){
   );
 }
 
-function SignInScreen({onSignIn, error, busy}){
+function SignInScreen({onGoogleSignIn, onEmailSignIn, onForgotPassword, error, info, busy}){
+  const [mode, setMode] = useState("google"); // "google" | "password"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const tabStyle = (active)=>({
+    flex:1, padding:"10px 14px", border:"1px solid var(--rule-strong)",
+    background: active ? "var(--brand)" : "var(--card)",
+    color: active ? "var(--paper)" : "var(--ink-soft)",
+    fontFamily:"var(--font-body)", fontSize:12.5, fontWeight:500,
+    letterSpacing:"0.02em", cursor: active ? "default" : "pointer",
+  });
+
+  const input = {
+    width:"100%", padding:"12px 14px", borderRadius:10,
+    border:"1px solid var(--rule-strong)", background:"var(--paper)",
+    fontFamily:"var(--font-body)", fontSize:14, color:"var(--ink)",
+    marginBottom:12,
+  };
+
+  const submitEmail = (e)=>{
+    if(e && e.preventDefault) e.preventDefault();
+    const em = email.trim().toLowerCase();
+    if(!em || !password){ return; }
+    onEmailSignIn(em, password);
+  };
+
+  const forgot = ()=>{
+    const em = email.trim().toLowerCase();
+    onForgotPassword(em);
+  };
+
   return (
     <div style={{
       minHeight:"100vh",background:"var(--paper)",display:"flex",
@@ -587,30 +614,76 @@ function SignInScreen({onSignIn, error, busy}){
             <div style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 144, 'SOFT' 20",fontWeight:600,fontSize:26,letterSpacing:"-0.02em",lineHeight:1.05,color:"var(--ink)"}}>PSM <em style={{fontStyle:"italic",color:"var(--brand)",fontWeight:500}}>Generator</em></div>
           </div>
         </div>
-        <h2 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 72",fontWeight:500,fontSize:22,margin:"0 0 10px",letterSpacing:"-0.01em"}}>{USE_ALLOWLIST_AUTH ? "Sign in" : "Tutor sign-in"}</h2>
-        <p style={{fontSize:13.5,lineHeight:1.55,color:"var(--ink-soft)",margin:"0 0 26px"}}>
-          {USE_ALLOWLIST_AUTH
-            ? "Sign in with your Google account. Access is limited to authorized users; if your account isn't on the allowlist, you'll see an error and can request access."
-            : <>Access is limited to verified <span style={{fontFamily:"var(--font-mono)",fontSize:12.5,color:"var(--ink)"}}>@{ATS_DOMAIN}</span> accounts. Student records are protected by this sign-in.</>}
+        <h2 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 72",fontWeight:500,fontSize:22,margin:"0 0 10px",letterSpacing:"-0.01em"}}>Sign in</h2>
+        <p style={{fontSize:13.5,lineHeight:1.55,color:"var(--ink-soft)",margin:"0 0 22px"}}>
+          Access is limited to authorized users. If you don&apos;t see an account here yet, ask Kiran or Aidan for an invitation.
         </p>
-        <button
-          onClick={onSignIn}
-          disabled={busy}
-          style={{
-            width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:12,
-            padding:"14px 20px",borderRadius:10,border:"1px solid var(--brand)",
-            background:busy?"var(--paper-alt)":"var(--brand)",color:busy?"var(--ink-mute)":"var(--paper)",
-            fontFamily:"var(--font-body)",fontSize:14,fontWeight:500,letterSpacing:"0.01em",
-            cursor:busy?"default":"pointer",boxShadow:busy?"none":"0 6px 18px -10px rgba(0,74,121,.7)"
-          }}>
-          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-            <path fill="#fff" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
-            <path fill="#fff" opacity=".95" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
-            <path fill="#fff" opacity=".85" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>
-            <path fill="#fff" opacity=".75" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
-          </svg>
-          <span>{busy ? "Opening Google…" : "Continue with Google"}</span>
-        </button>
+
+        <div style={{display:"flex",marginBottom:22,borderRadius:10,overflow:"hidden"}}>
+          <button type="button" onClick={()=>setMode("google")} style={{...tabStyle(mode==="google"), borderRadius:"10px 0 0 10px", borderRight:"none"}}>Google</button>
+          <button type="button" onClick={()=>setMode("password")} style={{...tabStyle(mode==="password"), borderRadius:"0 10px 10px 0"}}>Email &amp; password</button>
+        </div>
+
+        {mode === "google" && (
+          <>
+            <button
+              onClick={onGoogleSignIn}
+              disabled={busy}
+              style={{
+                width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:12,
+                padding:"14px 20px",borderRadius:10,border:"1px solid var(--brand)",
+                background:busy?"var(--paper-alt)":"var(--brand)",color:busy?"var(--ink-mute)":"var(--paper)",
+                fontFamily:"var(--font-body)",fontSize:14,fontWeight:500,letterSpacing:"0.01em",
+                cursor:busy?"default":"pointer",boxShadow:busy?"none":"0 6px 18px -10px rgba(0,74,121,.7)"
+              }}>
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path fill="#fff" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+                <path fill="#fff" opacity=".95" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+                <path fill="#fff" opacity=".85" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>
+                <path fill="#fff" opacity=".75" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+              </svg>
+              <span>{busy ? "Opening Google…" : "Continue with Google"}</span>
+            </button>
+          </>
+        )}
+
+        {mode === "password" && (
+          <form onSubmit={submitEmail}>
+            <input
+              type="email" autoComplete="email" placeholder="Email"
+              value={email} onChange={e=>setEmail(e.target.value)}
+              style={input} disabled={busy}
+            />
+            <input
+              type="password" autoComplete="current-password" placeholder="Password"
+              value={password} onChange={e=>setPassword(e.target.value)}
+              style={input} disabled={busy}
+            />
+            <button
+              type="submit"
+              disabled={busy || !email || !password}
+              style={{
+                width:"100%",padding:"14px 20px",borderRadius:10,border:"1px solid var(--brand)",
+                background:(busy||!email||!password)?"var(--paper-alt)":"var(--brand)",
+                color:(busy||!email||!password)?"var(--ink-mute)":"var(--paper)",
+                fontFamily:"var(--font-body)",fontSize:14,fontWeight:500,letterSpacing:"0.01em",
+                cursor:(busy||!email||!password)?"default":"pointer",
+                boxShadow:(busy||!email||!password)?"none":"0 6px 18px -10px rgba(0,74,121,.7)"
+              }}>
+              {busy ? "Signing in…" : "Sign in"}
+            </button>
+            <div style={{marginTop:12,textAlign:"center"}}>
+              <button type="button" onClick={forgot} disabled={busy} style={{
+                background:"none",border:"none",color:"var(--brand)",
+                fontFamily:"var(--font-body)",fontSize:12,cursor:busy?"default":"pointer",
+                textDecoration:"underline"
+              }}>
+                Forgot password?
+              </button>
+            </div>
+          </form>
+        )}
+
         {error && (
           <div style={{
             marginTop:18,padding:"12px 14px",borderRadius:8,
@@ -618,11 +691,64 @@ function SignInScreen({onSignIn, error, busy}){
             fontSize:12.5,color:"var(--accent)",lineHeight:1.5
           }}>{error}</div>
         )}
+        {info && !error && (
+          <div style={{
+            marginTop:18,padding:"12px 14px",borderRadius:8,
+            background:"var(--brand-soft)",border:"1px solid rgba(0,74,121,.25)",
+            fontSize:12.5,color:"var(--brand)",lineHeight:1.5
+          }}>{info}</div>
+        )}
         <div style={{marginTop:28,paddingTop:18,borderTop:"1px solid var(--rule)",fontSize:11,color:"var(--ink-mute)",letterSpacing:"0.01em",lineHeight:1.6}}>
-          {USE_ALLOWLIST_AUTH
-            ? "Need access? Ask Kiran or Aidan to add your Google email to the allowlist."
-            : "Need an account? Contact your workspace admin. Personal Gmail accounts will be denied."}
+          Need access? Ask Kiran or Aidan to add you. Families without Google accounts can request a password account.
         </div>
+      </div>
+    </div>
+  );
+}
+
+function UnverifiedScreen({email, onResend, onSignOut, busy, info, error}){
+  return (
+    <div style={{
+      minHeight:"100vh",background:"var(--paper)",display:"flex",
+      alignItems:"center",justifyContent:"center",padding:"40px 24px",
+      backgroundImage:"radial-gradient(circle at 20% 10%, rgba(154,91,31,.08), transparent 45%), radial-gradient(circle at 80% 80%, rgba(0,74,121,.05), transparent 45%)"
+    }}>
+      <div style={{
+        maxWidth:480,width:"100%",background:"var(--card)",
+        border:"1px solid var(--rule)",borderRadius:14,
+        boxShadow:"var(--shadow-lg)",padding:"44px 44px 36px",position:"relative",overflow:"hidden"
+      }}>
+        <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:"linear-gradient(90deg,var(--brand) 0,var(--brand) 72px,transparent 72px)"}}/>
+        <h2 style={{fontFamily:"var(--font-display)",fontVariationSettings:"'opsz' 72",fontWeight:500,fontSize:22,margin:"0 0 10px",letterSpacing:"-0.01em"}}>Check your email</h2>
+        <p style={{fontSize:13.5,lineHeight:1.55,color:"var(--ink-soft)",margin:"0 0 18px"}}>
+          Your email isn&apos;t verified yet. Open the setup link we sent to{" "}
+          <span style={{fontFamily:"var(--font-mono)",fontSize:12.5,color:"var(--ink)"}}>{email || "your email"}</span>{" "}
+          and follow it to set your password — that step also verifies your address. Then come back and sign in.
+        </p>
+        <button
+          onClick={onResend}
+          disabled={busy}
+          style={{
+            width:"100%",padding:"12px 20px",borderRadius:10,
+            border:"1px solid var(--brand)",background:busy?"var(--paper-alt)":"var(--brand)",
+            color:busy?"var(--ink-mute)":"var(--paper)",
+            fontFamily:"var(--font-body)",fontSize:13.5,fontWeight:500,
+            cursor:busy?"default":"pointer",marginBottom:10
+          }}>{busy?"Sending…":"Resend setup link"}</button>
+        <button
+          onClick={onSignOut}
+          style={{
+            width:"100%",padding:"12px 20px",borderRadius:10,
+            border:"1px solid var(--rule-strong)",background:"var(--card)",
+            color:"var(--ink)",fontFamily:"var(--font-body)",fontSize:13.5,
+            fontWeight:500,cursor:"pointer"
+          }}>Sign out</button>
+        {info && !error && (
+          <div style={{marginTop:18,padding:"12px 14px",borderRadius:8,background:"var(--brand-soft)",border:"1px solid rgba(0,74,121,.25)",fontSize:12.5,color:"var(--brand)",lineHeight:1.5}}>{info}</div>
+        )}
+        {error && (
+          <div style={{marginTop:18,padding:"12px 14px",borderRadius:8,background:"var(--accent-soft)",border:"1px solid rgba(154,91,31,.3)",fontSize:12.5,color:"var(--accent)",lineHeight:1.5}}>{error}</div>
+        )}
       </div>
     </div>
   );
@@ -872,10 +998,9 @@ function buildScoreTrendsSeries(student){
     .sort((a,b)=> a.date.localeCompare(b.date));
 }
 
-// Top-level role-aware router. Tutors, admins, and legacy workspace users
-// (null entry) see AppInner unchanged. Students and parents see StudentPortal
-// scoped to their linked student. This is the only place the role check
-// gates which app renders.
+// Top-level role-aware router. Tutors and admins see AppInner. Students and
+// parents see StudentPortal scoped to their linked student(s). This is the
+// only place the role check gates which app renders.
 function RoleRouter({authUser, onSignOut, currentUserEntry}){
   const role = currentUserEntry?.role || null;
   if(role === "parent"){
@@ -899,20 +1024,21 @@ function App(){
     return window.auth ? window.auth.currentUser : null;
   });
   // currentUserEntry: the allowlist entry for the signed-in user, or null.
-  // Only populated when USE_ALLOWLIST_AUTH is on (or when DEV_BYPASS is on).
-  // When the flag is off, this stays null and AppInner falls back to legacy
-  // tutor behavior — no role gating anywhere.
   const [currentUserEntry, setCurrentUserEntry] = useState(()=>{
     if(DEV_BYPASS) return DEV_FAKE_ENTRY;
     return null;
   });
   const [authReady, setAuthReady] = useState(DEV_BYPASS);
   const [signInError, setSignInError] = useState("");
+  const [signInInfo, setSignInInfo] = useState("");
   const [signInBusy, setSignInBusy] = useState(false);
-  // lockedOutEmail: user authenticated with Google but isn't on the allowlist.
-  // We keep them signed in so they can see their email and copy it; sign-out
-  // is explicit via the LockoutScreen button.
+  // lockedOutEmail: authenticated + verified but not on the allowlist.
   const [lockedOutEmail, setLockedOutEmail] = useState("");
+  // unverifiedUser: authenticated but emailVerified === false. Seen primarily
+  // by email/password users who haven't completed the password-reset flow
+  // (which is what marks their email verified). Google users should never
+  // hit this state because Google always reports verified emails.
+  const [unverifiedUser, setUnverifiedUser] = useState(null);
 
   useEffect(()=>{
     if(DEV_BYPASS){
@@ -925,72 +1051,57 @@ function App(){
         setAuthUser(null);
         setCurrentUserEntry(null);
         setLockedOutEmail("");
+        setUnverifiedUser(null);
         setAuthReady(true);
         setSignInBusy(false);
         return;
       }
       const email = (u.email||"").toLowerCase();
 
-      if(USE_ALLOWLIST_AUTH){
-        // New path: no domain check, look up allowlist entry.
-        if(!u.emailVerified){
-          window.auth.signOut();
-          setSignInError("Your Google account isn't verified. Try again with a verified account.");
-          setAuthUser(null);
-          setCurrentUserEntry(null);
-          setAuthReady(true);
-          setSignInBusy(false);
-          return;
-        }
-        const entry = await getAllowlistEntry(email);
-        if(!entry || !entry.active || !entry.role){
-          // Authenticated, but not authorized. Show lockout with email.
-          setAuthUser(u);
-          setCurrentUserEntry(null);
-          setLockedOutEmail(email);
-          setSignInError("");
-          setAuthReady(true);
-          setSignInBusy(false);
-          return;
-        }
-        setSignInError("");
+      if(!u.emailVerified){
+        // Route to UnverifiedScreen instead of signing them out. The rules
+        // require email_verified=true before the allowlist self-read will
+        // succeed, so there's no point calling getAllowlistEntry yet.
+        setUnverifiedUser(u);
+        setAuthUser(null);
+        setCurrentUserEntry(null);
         setLockedOutEmail("");
-        setAuthUser(u);
-        setCurrentUserEntry(entry);
+        setSignInError("");
         setAuthReady(true);
         setSignInBusy(false);
         return;
       }
-
-      // Legacy path: workspace domain check.
-      if(!email.endsWith("@"+ATS_DOMAIN) || !u.emailVerified){
-        window.auth.signOut();
-        setSignInError(`Access restricted to verified @${ATS_DOMAIN} accounts. You signed in as ${email||"an unknown account"}.`);
-        setAuthUser(null);
-        setCurrentUserEntry(null);
-      } else {
-        setSignInError("");
+      const entry = await getAllowlistEntry(email);
+      if(!entry || !entry.active || !entry.role){
         setAuthUser(u);
-        setCurrentUserEntry(null); // legacy mode has no role
+        setCurrentUserEntry(null);
+        setUnverifiedUser(null);
+        setLockedOutEmail(email);
+        setSignInError("");
+        setAuthReady(true);
+        setSignInBusy(false);
+        return;
       }
+      setSignInError("");
+      setSignInInfo("");
+      setLockedOutEmail("");
+      setUnverifiedUser(null);
+      setAuthUser(u);
+      setCurrentUserEntry(entry);
       setAuthReady(true);
       setSignInBusy(false);
     });
     return ()=>unsub();
   },[]);
 
-  const handleSignIn = async ()=>{
+  const handleGoogleSignIn = async ()=>{
     if(!window.auth){ setSignInError("Auth not initialized."); return; }
     setSignInBusy(true);
     setSignInError("");
+    setSignInInfo("");
     try{
       const provider = new firebase.auth.GoogleAuthProvider();
-      if(USE_ALLOWLIST_AUTH){
-        // No workspace domain hint — let users pick any Google account.
-        provider.setCustomParameters({prompt:"select_account"});
-      } else {
-        provider.setCustomParameters({hd: ATS_DOMAIN, prompt:"select_account"});
-      }
+      provider.setCustomParameters({prompt:"select_account"});
       await window.auth.signInWithPopup(provider);
     }catch(e){
       setSignInBusy(false);
@@ -1000,9 +1111,77 @@ function App(){
     }
   };
 
+  const handleEmailSignIn = async (email, password)=>{
+    if(!window.auth){ setSignInError("Auth not initialized."); return; }
+    setSignInBusy(true);
+    setSignInError("");
+    setSignInInfo("");
+    try{
+      await window.auth.signInWithEmailAndPassword(email, password);
+      // onAuthStateChanged takes it from here (unverified → UnverifiedScreen,
+      // verified + allowlisted → RoleRouter, verified + not allowlisted →
+      // LockoutScreen).
+    }catch(e){
+      setSignInBusy(false);
+      const code = e && e.code;
+      if(code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found"){
+        setSignInError("Wrong email or password. If this is your first time, check your email for a setup link.");
+      } else if(code === "auth/too-many-requests"){
+        setSignInError("Too many attempts. Wait a few minutes and try again, or use 'Forgot password?'.");
+      } else if(code === "auth/invalid-email"){
+        setSignInError("That doesn't look like a valid email.");
+      } else {
+        setSignInError(e && e.message ? e.message : "Sign-in failed. Try again.");
+      }
+    }
+  };
+
+  const handleForgotPassword = async (email)=>{
+    setSignInError("");
+    setSignInInfo("");
+    if(!email || !email.includes("@")){
+      setSignInError("Type your email in the field above, then click 'Forgot password?' again.");
+      return;
+    }
+    if(!window.auth){ setSignInError("Auth not initialized."); return; }
+    setSignInBusy(true);
+    try{
+      await window.auth.sendPasswordResetEmail(email);
+      setSignInInfo(`Reset link sent to ${email}. Check your inbox (and spam).`);
+    }catch(e){
+      const code = e && e.code;
+      if(code === "auth/user-not-found"){
+        // Don't leak which emails exist — same success message.
+        setSignInInfo(`If an account exists for ${email}, a reset link has been sent.`);
+      } else if(code === "auth/invalid-email"){
+        setSignInError("That doesn't look like a valid email.");
+      } else {
+        setSignInError(e && e.message ? e.message : "Couldn't send reset email.");
+      }
+    }
+    setSignInBusy(false);
+  };
+
+  const handleResendVerification = async ()=>{
+    if(!unverifiedUser){ return; }
+    setSignInError("");
+    setSignInInfo("");
+    setSignInBusy(true);
+    try{
+      // Setup-link-as-verification: sending a password reset email is the
+      // same mechanism admin-issued accounts use for first-time setup, and
+      // completing it marks the email verified. Simpler and more useful
+      // than sendEmailVerification for this product.
+      await window.auth.sendPasswordResetEmail(unverifiedUser.email);
+      setSignInInfo(`Setup link re-sent to ${unverifiedUser.email}.`);
+    }catch(e){
+      setSignInError(e && e.message ? e.message : "Couldn't send setup link.");
+    }
+    setSignInBusy(false);
+  };
+
   const handleSignOut = ()=>{
     if(DEV_BYPASS){
-      // Drop the ?dev=1 flag and reload — that's the real way out of dev mode.
       const url = new URL(location.href);
       url.searchParams.delete("dev");
       url.searchParams.delete("role");
@@ -1011,7 +1190,10 @@ function App(){
     }
     if(!window.auth) return;
     setLockedOutEmail("");
+    setUnverifiedUser(null);
     setCurrentUserEntry(null);
+    setSignInInfo("");
+    setSignInError("");
     window.auth.signOut();
   };
 
@@ -1023,13 +1205,30 @@ function App(){
     );
   }
 
-  // Locked-out state: user signed in but isn't on the allowlist. Flag-only.
-  if(USE_ALLOWLIST_AUTH && lockedOutEmail){
+  if(unverifiedUser){
+    return <UnverifiedScreen
+      email={unverifiedUser.email}
+      onResend={handleResendVerification}
+      onSignOut={handleSignOut}
+      busy={signInBusy}
+      info={signInInfo}
+      error={signInError}
+    />;
+  }
+
+  if(lockedOutEmail){
     return <LockoutScreen email={lockedOutEmail} onSignOut={handleSignOut}/>;
   }
 
   if(!authUser){
-    return <SignInScreen onSignIn={handleSignIn} error={signInError} busy={signInBusy}/>;
+    return <SignInScreen
+      onGoogleSignIn={handleGoogleSignIn}
+      onEmailSignIn={handleEmailSignIn}
+      onForgotPassword={handleForgotPassword}
+      error={signInError}
+      info={signInInfo}
+      busy={signInBusy}
+    />;
   }
 
   return <RoleRouter authUser={authUser} onSignOut={handleSignOut} currentUserEntry={currentUserEntry}/>;
@@ -1037,10 +1236,8 @@ function App(){
 
 /* ============ APP (authenticated inner) ============ */
 // ── Admins tab ────────────────────────────────────────────────────────────
-// Admin-only UI for managing the Firestore `allowlist` collection.
-// Only rendered when currentUserEntry.role === "admin". In Phase A this is
-// only reachable via ?dev=1&role=admin locally; Phase B adds the rules that
-// allow a real admin session to read/write the allowlist collection in prod.
+// Admin-only UI for managing the Firestore `allowlist` collection. Only
+// rendered when currentUserEntry.role === "admin".
 function AdminsTab({currentUserEntry, students, showToast}){
   const [entries, setEntries] = useState([]);        // allowlist docs
   const [loading, setLoading] = useState(true);
@@ -1050,8 +1247,10 @@ function AdminsTab({currentUserEntry, students, showToast}){
   const [fEmail, setFEmail] = useState("");
   const [fRole, setFRole] = useState("tutor");
   const [fStudentIds, setFStudentIds] = useState([]);
+  const [fCreatePw, setFCreatePw] = useState(false);
   const [fBusy, setFBusy] = useState(false);
   const [fError, setFError] = useState("");
+  const [fInfo, setFInfo] = useState("");
 
   const selfEmail = (currentUserEntry?.email || "").toLowerCase();
 
@@ -1094,6 +1293,7 @@ function AdminsTab({currentUserEntry, students, showToast}){
 
   const addEntry = async ()=>{
     setFError("");
+    setFInfo("");
     const emailKey = fEmail.trim().toLowerCase();
     if(!emailKey || !emailKey.includes("@")){ setFError("Enter a valid email."); return; }
     if((fRole==="student" || fRole==="parent") && fStudentIds.length === 0){
@@ -1102,6 +1302,50 @@ function AdminsTab({currentUserEntry, students, showToast}){
     }
     if(!window.db){ setFError("Firestore not initialized"); return; }
     setFBusy(true);
+
+    // Optional step: create a Firebase Auth email/password account and
+    // email the family a setup link. Done BEFORE the allowlist write so a
+    // create failure doesn't leave a dangling allowlist entry. Uses a
+    // secondary named Firebase app so the createUserWithEmailAndPassword
+    // side-effect (sign-in) doesn't sign the admin out of the primary app.
+    let createdAuthAccount = false;
+    let authAlreadyExisted = false;
+    if(fCreatePw){
+      if(!window.firebaseConfig || !window.auth){
+        setFError("Auth not initialized; cannot create password account.");
+        setFBusy(false);
+        return;
+      }
+      const secondaryName = "admin-create-" + Date.now();
+      let secondary = null;
+      try{
+        secondary = firebase.initializeApp(window.firebaseConfig, secondaryName);
+        const tmpPw = Math.random().toString(36).slice(2) + "Aa1!" + Math.random().toString(36).slice(2);
+        try{
+          await secondary.auth().createUserWithEmailAndPassword(emailKey, tmpPw);
+          createdAuthAccount = true;
+        }catch(ce){
+          if(ce && ce.code === "auth/email-already-in-use"){
+            authAlreadyExisted = true;
+          } else {
+            throw ce;
+          }
+        }
+        await secondary.auth().signOut().catch(()=>{});
+        // Send the reset/setup email via the PRIMARY app (stateless call).
+        // Completing the reset flow marks email_verified=true, which is
+        // what firestore.rules requires before the allowlist self-read
+        // will succeed.
+        await window.auth.sendPasswordResetEmail(emailKey);
+      }catch(e){
+        setFError("Auth step failed: " + (e && e.message ? e.message : "unknown"));
+        setFBusy(false);
+        if(secondary){ try{ await secondary.delete(); }catch{} }
+        return;
+      }
+      try{ await secondary.delete(); }catch{}
+    }
+
     try{
       await window.db.collection("allowlist").doc(emailKey).set({
         email: emailKey,
@@ -1112,11 +1356,21 @@ function AdminsTab({currentUserEntry, students, showToast}){
         addedBy: selfEmail || "admin-ui",
         addedAt: new Date().toISOString(),
       }, {merge:false});
-      setFEmail(""); setFRole("tutor"); setFStudentIds([]);
-      showToast && showToast(`Added ${emailKey}`);
+      setFEmail(""); setFRole("tutor"); setFStudentIds([]); setFCreatePw(false);
+      let msg = `Added ${emailKey}`;
+      if(fCreatePw){
+        msg = authAlreadyExisted
+          ? `Added ${emailKey}. Auth account already existed — setup link sent.`
+          : `Added ${emailKey}. Password account created and setup link emailed.`;
+      }
+      setFInfo(msg);
+      showToast && showToast(msg);
       await loadEntries();
     }catch(e){
-      setFError(e && e.message ? e.message : "Write failed");
+      const warnPrefix = createdAuthAccount
+        ? "Auth account was created and setup email sent, but allowlist write failed: "
+        : "Write failed: ";
+      setFError(warnPrefix + (e && e.message ? e.message : "unknown"));
     }
     setFBusy(false);
   };
@@ -1183,14 +1437,6 @@ function AdminsTab({currentUserEntry, students, showToast}){
         </p>
       </div>
 
-      {!USE_ALLOWLIST_AUTH && (
-        <div style={{...card, background:"var(--accent-soft)", borderColor:"rgba(154,91,31,.35)"}}>
-          <div style={{fontSize:12,color:"var(--accent)",lineHeight:1.6}}>
-            <strong>Phase A — flag off.</strong> <span style={{fontFamily:"var(--font-mono)"}}>USE_ALLOWLIST_AUTH</span> is <span style={{fontFamily:"var(--font-mono)"}}>false</span>, so the app is still using the workspace domain gate in production. This admin UI can read/write the allowlist in dev bypass mode and once the Phase B rules are deployed. In prod right now, reads and writes will be denied by firestore.rules.
-          </div>
-        </div>
-      )}
-
       {/* Add entry */}
       <div style={card}>
         <div style={{fontFamily:"var(--font-display)",fontSize:16,fontWeight:500,marginBottom:14}}>Add allowlist entry</div>
@@ -1240,8 +1486,26 @@ function AdminsTab({currentUserEntry, students, showToast}){
           </div>
         )}
 
+        <div style={{marginBottom:14,padding:"10px 12px",borderRadius:8,background:"var(--paper-alt)",border:"1px solid var(--rule)"}}>
+          <label style={{display:"flex",alignItems:"flex-start",gap:10,cursor:"pointer",fontSize:12.5,color:"var(--ink-soft)",lineHeight:1.5}}>
+            <input
+              type="checkbox"
+              checked={fCreatePw}
+              onChange={e=>setFCreatePw(e.target.checked)}
+              style={{marginTop:3}}
+            />
+            <span>
+              <strong style={{color:"var(--ink)"}}>Also create a password account and email a setup link.</strong>
+              {" "}Use this for families without a Google account. Firebase sends a password-reset link that doubles as first-time setup; clicking it verifies the email and lets them pick a password.
+            </span>
+          </label>
+        </div>
+
         {fError && (
           <div style={{padding:"10px 12px",borderRadius:8,background:"var(--accent-soft)",border:"1px solid rgba(154,91,31,.3)",fontSize:12,color:"var(--accent)",marginBottom:12}}>{fError}</div>
+        )}
+        {fInfo && !fError && (
+          <div style={{padding:"10px 12px",borderRadius:8,background:"var(--brand-soft)",border:"1px solid rgba(0,74,121,.25)",fontSize:12,color:"var(--brand)",marginBottom:12}}>{fInfo}</div>
         )}
 
         <button
@@ -1254,7 +1518,7 @@ function AdminsTab({currentUserEntry, students, showToast}){
             fontFamily:"var(--font-body)",fontSize:13,fontWeight:500,
             cursor:fBusy?"default":"pointer"
           }}>
-          {fBusy ? "Adding…" : "Add entry"}
+          {fBusy ? (fCreatePw?"Creating…":"Adding…") : (fCreatePw?"Create account + add entry":"Add entry")}
         </button>
       </div>
 
@@ -1338,9 +1602,6 @@ function AdminsTab({currentUserEntry, students, showToast}){
 }
 
 function AppInner({authUser, onSignOut, currentUserEntry}){
-  // Role gating. When USE_ALLOWLIST_AUTH is off in production, currentUserEntry
-  // is null and isAdmin is false — the Admins tab is simply not rendered and
-  // the rest of the app behaves exactly as it did pre-migration.
   const isAdmin = !!(currentUserEntry && currentUserEntry.role === "admin" && currentUserEntry.active);
   const[tab,setTab]=useState("generator");
   const[students,setStudents]=useState(()=>sLoad("psm_v4",sLoad("psm_v3",[])));
