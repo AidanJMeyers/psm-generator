@@ -571,6 +571,19 @@ function pickPortalStudentId(entry){
   return ids[0] || "";
 }
 
+// Top-level role-aware router. Tutors, admins, and legacy workspace users
+// (null entry) see AppInner unchanged. Students and parents see StudentPortal
+// scoped to their linked student. This is the only place the role check
+// gates which app renders.
+function RoleRouter({authUser, onSignOut, currentUserEntry}){
+  const role = currentUserEntry?.role || null;
+  if(role === "student" || role === "parent"){
+    const studentId = pickPortalStudentId(currentUserEntry);
+    return <StudentPortal studentId={studentId} onSignOut={onSignOut} currentUserEntry={currentUserEntry}/>;
+  }
+  return <AppInner authUser={authUser} onSignOut={onSignOut} currentUserEntry={currentUserEntry}/>;
+}
+
 function App(){
   const [authUser, setAuthUser] = useState(()=>{
     if(DEV_BYPASS) return DEV_FAKE_USER;
@@ -710,7 +723,7 @@ function App(){
     return <SignInScreen onSignIn={handleSignIn} error={signInError} busy={signInBusy}/>;
   }
 
-  return <AppInner authUser={authUser} onSignOut={handleSignOut} currentUserEntry={currentUserEntry}/>;
+  return <RoleRouter authUser={authUser} onSignOut={handleSignOut} currentUserEntry={currentUserEntry}/>;
 }
 
 /* ============ APP (authenticated inner) ============ */
