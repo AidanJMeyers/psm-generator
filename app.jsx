@@ -3527,7 +3527,7 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 /* ============ STUDENT PORTAL (Phase 2 Session 3) ============ */
 // Read-only view for student/parent roles. Subscribes to a single
 // /students/{id} doc. Never reads the full collection or _private/info.
-function StudentPortal({studentId, onSignOut, currentUserEntry}){
+function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   const [tab, setTab] = useState("tracking");
   const {status, student} = usePortalStudent(studentId);
 
@@ -3541,7 +3541,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry}){
 
   if(status === "error"){
     return (
-      <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry}>
+      <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#8C2E2E",letterSpacing:-.2}}>
             Couldn't load your student record. Try reloading.
@@ -3553,7 +3553,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry}){
 
   if(status === "not-found" || !student){
     return (
-      <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry}>
+      <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:10}}>
             No student record linked to this account.
@@ -3567,7 +3567,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry}){
   }
 
   return (
-    <PortalShell studentName={student.name} studentGrade={student.grade} onSignOut={onSignOut} currentUserEntry={currentUserEntry}>
+    <PortalShell studentName={student.name} studentGrade={student.grade} onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
       <div style={{display:"flex",gap:28,marginBottom:24,borderBottom:"1px solid rgba(15,26,46,.12)",flexWrap:"wrap"}}>
         {[
           {id:"tracking", label:"Score Tracking"},
@@ -3597,7 +3597,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry}){
   );
 }
 
-function PortalShell({studentName, studentGrade, onSignOut, children}){
+function PortalShell({studentName, studentGrade, onSignOut, switcherSlot, children}){
   return (
     <div data-portal="student" style={{minHeight:"100vh",background:"var(--paper)",padding:"28px 32px 80px"}}>
       <div style={{maxWidth:960,margin:"0 auto"}}>
@@ -3612,6 +3612,11 @@ function PortalShell({studentName, studentGrade, onSignOut, children}){
             {studentGrade && (
               <div style={{marginTop:8}}>
                 <span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.28)"}}>Grade {studentGrade}</span>
+              </div>
+            )}
+            {switcherSlot && (
+              <div style={{marginTop:14}}>
+                {switcherSlot}
               </div>
             )}
           </div>
