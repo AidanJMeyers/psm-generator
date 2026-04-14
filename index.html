@@ -4317,7 +4317,90 @@ function PortalEmptyInline({copy}){
   );
 }
 function PortalHistoryTab({student}){
-  return <div style={{...CARD, padding:24}}>Assignment History — coming in Task 8</div>;
+  const assignments = (student.assignments||[]).filter(a=>!a.deleted);
+
+  if(assignments.length===0){
+    return (
+      <div style={{...CARD, padding:"60px 40px", textAlign:"center"}}>
+        <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:10}}>
+          No assignments yet.
+        </div>
+        <div style={{fontSize:13,color:"#66708A",lineHeight:1.55}}>
+          Your tutor will start assigning practice here.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+      {assignments.slice().reverse().map(asg=>{
+        const worksheets = (asg.worksheets||[]).filter(w=>!w.deleted);
+        const welledDomain = (asg.welledDomain||[]).filter(w=>!w.deleted);
+        const practiceExams = (asg.practiceExams||[]).filter(e=>!e.deleted);
+        return (
+          <div key={asg.id} style={{...CARD, padding:20}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,paddingBottom:12,borderBottom:"1px solid rgba(15,26,46,.08)",gap:12,flexWrap:"wrap"}}>
+              <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:18,color:"#0F1A2E",fontWeight:600,letterSpacing:-.2}}>
+                {asg.date || asg.dateAssigned || "Undated session"}
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {worksheets.length>0 && <span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.28)"}}>{worksheets.length} Worksheet{worksheets.length===1?"":"s"}</span>}
+                {welledDomain.length>0 && <span style={{...mkPill("transparent","#4C7A4C"),border:"1px solid rgba(76,122,76,.35)"}}>{welledDomain.length} WellEd</span>}
+                {practiceExams.length>0 && <span style={{...mkPill("transparent","#6E3F12"),border:"1px solid rgba(154,91,31,.35)"}}>{practiceExams.length} Exam{practiceExams.length===1?"":"s"}</span>}
+              </div>
+            </div>
+
+            {worksheets.length>0 && (
+              <div style={{marginBottom:welledDomain.length||practiceExams.length?14:0}}>
+                {worksheets.map(w=>(
+                  <div key={w.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid rgba(15,26,46,.06)",gap:12}}>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,color:"#0F1A2E"}}>
+                        {w.title || `${w.domain||""} — ${w.difficulty||""}`}
+                      </div>
+                      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#66708A",marginTop:2}}>
+                        {w.subject||""} {w.domain?`· ${w.domain}`:""} {w.difficulty?`· ${w.difficulty}`:""}
+                      </div>
+                    </div>
+                    {w.url ? (
+                      <a href={w.url} target="_blank" rel="noopener noreferrer" style={{
+                        fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#9A5B1F",
+                        textDecoration:"none",border:"1px solid rgba(154,91,31,.4)",padding:"4px 10px",
+                        borderRadius:3,textTransform:"uppercase",letterSpacing:1
+                      }}>Open PDF →</a>
+                    ) : (
+                      <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1,textTransform:"uppercase"}}>No PDF</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {welledDomain.length>0 && (
+              <div style={{marginBottom:practiceExams.length?14:0}}>
+                {welledDomain.map(w=>(
+                  <div key={w.id} style={{padding:"6px 0",fontFamily:"'Fraunces',Georgia,serif",fontSize:13,color:"#0F1A2E"}}>
+                    WellEd · {w.domain} · <span style={{color:"#66708A",fontStyle:"italic"}}>{w.difficulty}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {practiceExams.length>0 && (
+              <div>
+                {practiceExams.map(e=>(
+                  <div key={e.id} style={{padding:"6px 0",fontFamily:"'Fraunces',Georgia,serif",fontSize:13,color:"#0F1A2E"}}>
+                    Practice Exam · <span style={{color:"#66708A",fontStyle:"italic"}}>{e.type||"full"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 function PortalTrendsTab({student}){
   return <div style={{...CARD, padding:24}}>Score Trends — coming in Task 10</div>;
