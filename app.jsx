@@ -3632,6 +3632,115 @@ function PortalShell({studentName, studentGrade, onSignOut, switcherSlot, childr
   );
 }
 
+// Segmented control for the parent portal. Controlled: ParentPortal owns
+// selectedId and passes onSelect. Labels prefer student.name, fall back to
+// "Child N" while meta is loading or when a per-child fetch failed.
+function ChildSwitcher({children, selectedId, onSelect}){
+  if(!children || children.length < 2) return null;
+  return (
+    <div role="tablist" aria-label="Choose a child" style={{
+      display:"inline-flex", gap:6, padding:4,
+      border:"1px solid rgba(15,26,46,.18)", borderRadius:10, background:"#fff",
+      flexWrap:"wrap"
+    }}>
+      {children.map((c, i) => {
+        const active = c.id === selectedId;
+        const label = c.name || `Child ${i+1}`;
+        return (
+          <button
+            key={c.id}
+            role="tab"
+            aria-selected={active}
+            onClick={()=>onSelect(c.id)}
+            style={{
+              border:"none", cursor:"pointer", padding:"8px 14px", borderRadius:7,
+              background: active ? "#0F1A2E" : "transparent",
+              color: active ? "#fff" : "#0F1A2E",
+              fontFamily:"'Fraunces',Georgia,serif", fontVariationSettings:'"opsz" 48',
+              fontSize:13, fontWeight: active ? 600 : 500, letterSpacing:-.1,
+              display:"flex", alignItems:"center", gap:8,
+            }}
+          >
+            <span>{label}</span>
+            {c.grade && (
+              <span style={{
+                fontFamily:"'IBM Plex Mono',monospace", fontSize:9, letterSpacing:.8,
+                textTransform:"uppercase",
+                color: active ? "rgba(255,255,255,.65)" : "#66708A",
+              }}>
+                G{c.grade}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Parent multi-child wrapper. Owns the selected-child state, persists it in
+// localStorage, pre-fetches sibling labels, and hands one studentId to the
+// existing StudentPortal. Only mounted when role === "parent" and the
+// allowlist entry has ≥2 studentIds.
+const PORTAL_SELECTED_CHILD_KEY = "psm-portal-selected-child";
+
+function readStoredChildId(){
+  try{ return localStorage.getItem(PORTAL_SELECTED_CHILD_KEY) || ""; }
+  catch{ return ""; }
+}
+function writeStoredChildId(id){
+  try{ localStorage.setItem(PORTAL_SELECTED_CHILD_KEY, id || ""); }
+  catch{ /* private mode — ignore */ }
+}
+
+function ParentPortal({onSignOut, currentUserEntry}){
+  const studentIds = Array.isArray(currentUserEntry?.studentIds) ? currentUserEntry.studentIds : [];
+  const idsKey = studentIds.join(",");
+
+  const [selectedId, setSelectedId] = useState(()=>
+    pickParentSelectedChildId(currentUserEntry, readStoredChildId())
+  );
+
+  // Re-validate when linked ids change (allowlist updated mid-session).
+  // Also self-heals localStorage so a stale stored id doesn't linger forever.
+  useEffect(()=>{
+    const next = pickParentSelectedChildId(currentUserEntry, selectedId || readStoredChildId());
+    if(next !== selectedId){
+      setSelectedId(next);
+      writeStoredChildId(next);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey]);
+
+  const meta = usePortalChildrenMeta(studentIds);
+
+  const handleSelect = (id)=>{
+    setSelectedId(id);
+    writeStoredChildId(id);
+  };
+
+  const switcherChildren = meta.children.length
+    ? meta.children
+    : studentIds.map(id=>({id, name:"", grade:""}));
+
+  const switcher = (
+    <ChildSwitcher
+      children={switcherChildren}
+      selectedId={selectedId}
+      onSelect={handleSelect}
+    />
+  );
+
+  return (
+    <StudentPortal
+      studentId={selectedId}
+      onSignOut={onSignOut}
+      currentUserEntry={currentUserEntry}
+      switcherSlot={switcher}
+    />
+  );
+}
+
 function PortalTrackingTab({student}){
   const pts = allScoreDataPoints(student);
   const diagProfile = (student.diagnostics||[]).length ? buildDiagnosticProfile(student.diagnostics) : null;
