@@ -518,6 +518,14 @@ const DEV_FAKE_ENTRY = {
   addedAt: null,
 };
 
+// Portal routing helper. Session 4 will add a child-switcher that may pick a
+// different id from entry.studentIds; for Session 3 we always take the first.
+function pickPortalStudentId(entry){
+  if(!entry) return "";
+  const ids = Array.isArray(entry.studentIds) ? entry.studentIds : [];
+  return ids[0] || "";
+}
+
 function App(){
   const [authUser, setAuthUser] = useState(()=>{
     if(DEV_BYPASS) return DEV_FAKE_USER;
