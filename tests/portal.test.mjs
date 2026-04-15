@@ -171,9 +171,12 @@ test('pickLatestSubmission: only submitted, missing submittedAt → first non-nu
 function canSubmitDraft(submission){
   if(!submission) return false;
   if(submission.status !== "draft") return false;
-  const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
-  const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
-  return text.length > 0;
+  if(!Array.isArray(submission.responses)) return false;
+  for(const r of submission.responses){
+    const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
+    if(text.length > 0) return true;
+  }
+  return false;
 }
 
 test('canSubmitDraft: null → false', () => {
@@ -200,10 +203,27 @@ test('canSubmitDraft: draft with content → true', () => {
 const SERVER_TS = Symbol("server-ts");
 const FIELD_VALUE_STUB = { serverTimestamp: () => SERVER_TS };
 
-function makeDraftPayload({assignmentId, answersText, isCreate, FieldValue}){
+function makeDraftPayload({assignmentId, answersText, answersByWorksheet, catalogByWorksheetId, isCreate, FieldValue}){
+  let responses;
+  if(answersByWorksheet && catalogByWorksheetId){
+    responses = [];
+    for(const wId of Object.keys(answersByWorksheet)){
+      const answers = answersByWorksheet[wId] || [];
+      const expectedLength = catalogByWorksheetId[wId]?.questionIds?.length ?? answers.length;
+      for(let i=0; i<expectedLength; i++){
+        responses.push({
+          worksheetId: wId,
+          questionIndex: i,
+          studentAnswer: typeof answers[i] === "string" ? answers[i] : "",
+        });
+      }
+    }
+  } else {
+    responses = [{worksheetId: null, questionIndex: 0, studentAnswer: answersText || ""}];
+  }
   const base = {
     assignmentId,
-    responses: [{questionIndex: 0, studentAnswer: answersText || ""}],
+    responses,
     status: "draft",
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -238,6 +258,53 @@ test('makeDraftPayload: empty answer still produces a response entry', () => {
 test('makeDraftPayload: status is always "draft" (never submitted)', () => {
   const p = makeDraftPayload({assignmentId:"asg1", answersText:"anything", isCreate:false, FieldValue:FIELD_VALUE_STUB});
   assert.equal(p.status, "draft");
+});
+
+test('makeDraftPayload: legacy shape sets worksheetId null', () => {
+  const p = makeDraftPayload({assignmentId:"asg1", answersText:"1. B", isCreate:false, FieldValue:FIELD_VALUE_STUB});
+  assert.equal(p.responses[0].worksheetId, null);
+  assert.equal(p.responses[0].questionIndex, 0);
+  assert.equal(p.responses[0].studentAnswer, "1. B");
+});
+
+test('makeDraftPayload: nested shape flattens per-worksheet answers tagged with worksheetId', () => {
+  const p = makeDraftPayload({
+    assignmentId: "asg2",
+    answersByWorksheet: {w1: ["A","B",""], w2: ["42",""]},
+    catalogByWorksheetId: {w1: {questionIds: ["q1","q2","q3"]}, w2: {questionIds: ["q4","q5"]}},
+    isCreate: false,
+    FieldValue: FIELD_VALUE_STUB,
+  });
+  assert.equal(p.responses.length, 5);
+  assert.deepEqual(p.responses[0], {worksheetId:"w1", questionIndex:0, studentAnswer:"A"});
+  assert.deepEqual(p.responses[1], {worksheetId:"w1", questionIndex:1, studentAnswer:"B"});
+  assert.deepEqual(p.responses[2], {worksheetId:"w1", questionIndex:2, studentAnswer:""});
+  assert.deepEqual(p.responses[3], {worksheetId:"w2", questionIndex:0, studentAnswer:"42"});
+  assert.deepEqual(p.responses[4], {worksheetId:"w2", questionIndex:1, studentAnswer:""});
+});
+
+test('canSubmitDraft: nested — true when any entry is non-empty', () => {
+  const sub = {
+    status: "draft",
+    responses: [
+      {worksheetId:"w1", questionIndex:0, studentAnswer:""},
+      {worksheetId:"w1", questionIndex:1, studentAnswer:"B"},
+      {worksheetId:"w2", questionIndex:0, studentAnswer:""},
+    ],
+  };
+  assert.equal(canSubmitDraft(sub), true);
+});
+
+test('canSubmitDraft: nested — false when all entries empty or whitespace', () => {
+  const sub = {
+    status: "draft",
+    responses: [
+      {worksheetId:"w1", questionIndex:0, studentAnswer:"  "},
+      {worksheetId:"w1", questionIndex:1, studentAnswer:""},
+      {worksheetId:"w2", questionIndex:0, studentAnswer:"\t"},
+    ],
+  };
+  assert.equal(canSubmitDraft(sub), false);
 });
 
 // ── Session 6: tutor submission review helpers ────────────────────────────

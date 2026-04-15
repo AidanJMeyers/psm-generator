@@ -1163,16 +1163,38 @@ function makeReviewPayload({scoreCorrect, scoreTotal, reviewerNotes}){
 function canSubmitDraft(submission){
   if(!submission) return false;
   if(submission.status !== "draft") return false;
-  const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
-  const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
-  return text.length > 0;
+  if(!Array.isArray(submission.responses)) return false;
+  for(const r of submission.responses){
+    const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
+    if(text.length > 0) return true;
+  }
+  return false;
 }
 
-function makeDraftPayload({assignmentId, answersText, isCreate}){
+function makeDraftPayload({assignmentId, answersText, answersByWorksheet, catalogByWorksheetId, isCreate}){
   const FV = firebase.firestore.FieldValue;
+  let responses;
+  if(answersByWorksheet && catalogByWorksheetId){
+    // Nested shape — one entry per question per worksheet, flat + tagged.
+    responses = [];
+    for(const wId of Object.keys(answersByWorksheet)){
+      const answers = answersByWorksheet[wId] || [];
+      const expectedLength = catalogByWorksheetId[wId]?.questionIds?.length ?? answers.length;
+      for(let i=0; i<expectedLength; i++){
+        responses.push({
+          worksheetId: wId,
+          questionIndex: i,
+          studentAnswer: typeof answers[i] === "string" ? answers[i] : "",
+        });
+      }
+    }
+  } else {
+    // Legacy single-blob shape — zero-worksheet fallback or Phase 2 resume.
+    responses = [{worksheetId: null, questionIndex: 0, studentAnswer: answersText || ""}];
+  }
   const base = {
     assignmentId,
-    responses: [{questionIndex: 0, studentAnswer: answersText || ""}],
+    responses,
     status: "draft",
     updatedAt: FV.serverTimestamp(),
   };
