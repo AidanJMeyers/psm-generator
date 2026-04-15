@@ -4971,6 +4971,173 @@ function InlinePdfViewer({url}){
   );
 }
 
+// One block per worksheet inside an assignment. Reads catalogEntry via
+// Session 14's catalog join to produce bubble-sheet inputs; falls through to
+// a per-worksheet textarea when the catalog match or questionIds[] is missing.
+// Answer state is owned by the parent SubmissionEditor — this component is
+// a controlled view.
+function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLocked, indexLabel}){
+  const hasCatalog = !!(catalogEntry && Array.isArray(catalogEntry.questionIds) && catalogEntry.questionIds.length > 0);
+  const format = hasCatalog ? catalogEntry.answerFormat : null;
+  const pdfUrl = (catalogEntry && catalogEntry.stu) || worksheet.url || null;
+
+  const headerTitle = worksheet.title || `${worksheet.domain||""} — ${worksheet.difficulty||""}`;
+  const headerSub = [worksheet.subject, worksheet.domain, worksheet.difficulty].filter(Boolean).join(" · ");
+
+  const setAnswerAt = (i, value) => {
+    if(isLocked) return;
+    const next = answers.slice();
+    while(next.length <= i) next.push("");
+    next[i] = value;
+    onAnswersChange(next);
+  };
+
+  const renderRow = (i) => {
+    const value = answers[i] || "";
+    if(format === "multiple-choice"){
+      return renderMcRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    if(format === "free-response"){
+      return renderFrRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    if(format === "mixed"){
+      return renderMixedRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    return null;
+  };
+
+  return (
+    <div style={{
+      marginTop:20, paddingTop:20,
+      borderTop:"1px solid rgba(15,26,46,.12)",
+    }}>
+      <div style={{marginBottom:12}}>
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", letterSpacing:1, textTransform:"uppercase", marginBottom:4}}>
+          {indexLabel}
+        </div>
+        <div style={{fontFamily:"'Fraunces',Georgia,serif", fontSize:18, color:"#0F1A2E", fontWeight:600, letterSpacing:-.1}}>
+          {headerTitle}
+        </div>
+        {headerSub && (
+          <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", marginTop:2}}>
+            {headerSub}
+          </div>
+        )}
+      </div>
+
+      {hasCatalog ? (
+        <div style={{display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:16, alignItems:"start"}}>
+          <InlinePdfViewer url={pdfUrl}/>
+          <div style={{display:"flex", flexDirection:"column", gap:8}}>
+            {catalogEntry.questionIds.map((_qid, i) => (
+              <div key={i} style={{display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom:"1px solid rgba(15,26,46,.05)"}}>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:11, color:"#66708A", width:24, flexShrink:0}}>
+                  {i+1}.
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  {renderRow(i)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#8C6A2E", marginBottom:8, fontStyle:"italic"}}>
+            No bubble sheet available for this worksheet — type your answers below.
+          </div>
+          {pdfUrl && <InlinePdfViewer url={pdfUrl}/>}
+          <textarea
+            value={answers[0] || ""}
+            onChange={e => setAnswerAt(0, e.target.value)}
+            disabled={isLocked}
+            placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
+            style={{
+              width:"100%", minHeight:160, padding:"12px 14px", borderRadius:8,
+              border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
+              fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical",
+              boxSizing:"border-box", marginTop:10,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// MC row: A/B/C/D chip row. Chip click sets answer to that letter; clicking
+// the selected letter clears it.
+function renderMcRow(i, value, onChange, isLocked){
+  const letters = ["A","B","C","D"];
+  return (
+    <div style={{display:"flex", gap:6}}>
+      {letters.map(L => {
+        const selected = value === L;
+        return (
+          <button
+            key={L}
+            disabled={isLocked}
+            onClick={()=> onChange(selected ? "" : L)}
+            style={{
+              width:36, height:32, borderRadius:6,
+              border:`1px solid ${selected?"#0F1A2E":"rgba(15,26,46,.22)"}`,
+              background: selected?"#0F1A2E":"#fff",
+              color: selected?"#fff":"#0F1A2E",
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:13, fontWeight:600,
+              cursor: isLocked?"not-allowed":"pointer",
+            }}
+          >{L}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// FR row: single numeric input. Text type (not number) so "3/4" and "0.25" both work.
+function renderFrRow(i, value, onChange, isLocked){
+  return (
+    <input
+      type="text"
+      value={value}
+      disabled={isLocked}
+      onChange={e => onChange(e.target.value)}
+      placeholder="Your answer"
+      style={{
+        width:"100%", maxWidth:220, padding:"8px 12px", borderRadius:6,
+        border:"1px solid rgba(15,26,46,.22)",
+        fontFamily:"'IBM Plex Mono',monospace", fontSize:13, color:"#0F1A2E",
+        boxSizing:"border-box",
+      }}
+    />
+  );
+}
+
+// Mixed row: both MC chips AND a numeric input, both live. Whichever the
+// student fills wins. If both are filled, the text input takes precedence
+// (last-write-wins on the shared answer slot).
+function renderMixedRow(i, value, onChange, isLocked){
+  const isMc = value === "A" || value === "B" || value === "C" || value === "D";
+  return (
+    <div style={{display:"flex", gap:10, alignItems:"center", flexWrap:"wrap"}}>
+      {renderMcRow(i, isMc ? value : "", onChange, isLocked)}
+      <span style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", letterSpacing:1}}>OR</span>
+      <input
+        type="text"
+        value={isMc ? "" : value}
+        disabled={isLocked}
+        onChange={e => onChange(e.target.value)}
+        placeholder="Numeric"
+        style={{
+          flex:"1 1 140px", maxWidth:180, padding:"8px 12px", borderRadius:6,
+          border:"1px solid rgba(15,26,46,.22)",
+          fontFamily:"'IBM Plex Mono',monospace", fontSize:13, color:"#0F1A2E",
+          boxSizing:"border-box",
+        }}
+      />
+    </div>
+  );
+}
+
 // Per-assignment submission entry. Drill-in from PortalHistoryTab. Parents
 // reach this in readOnly mode — never editable. Students in editable mode
 // autosave drafts to /students/{id}/submissions/{subId} on a 750ms debounce
