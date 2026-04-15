@@ -15,7 +15,11 @@
         "firebase-debug.log",
         "firebase-debug.*.log",
         ".env",
-        ".env.*"
+        ".env.*",
+        "*.test.js"
+      ],
+      "predeploy": [
+        "cp \"$PROJECT_DIR/worksheets_catalog.json\" \"$RESOURCE_DIR/worksheets_catalog.json\""
       ]
     }
   ],

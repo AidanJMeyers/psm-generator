@@ -5621,12 +5621,68 @@ function InlinePdfViewer({url}){
   );
 }
 
+// Session 15: per-question correctness indicator rendered to the right of
+// each answer row when the submission is graded and locked. Receives the
+// perQuestion[i] entry from the submission doc (may be null for skipped).
+// Option C (Kiran directive): reveals the stored correct answer next to
+// every graded question for pedagogical feedback. Skipped questions show
+// only the "—" glyph with no reveal.
+function AnswerResultIndicator({result}){
+  if(!result){
+    return <span style={{width:22, flexShrink:0}}/>;
+  }
+  const circleBase = {
+    width:22, height:22, borderRadius:"50%", flexShrink:0,
+    display:"inline-flex", alignItems:"center", justifyContent:"center",
+    fontFamily:"'IBM Plex Mono',monospace", fontSize:14, fontWeight:700, lineHeight:1,
+  };
+  const revealBase = {
+    fontFamily:"'IBM Plex Mono',monospace", fontSize:10,
+    letterSpacing:.5, whiteSpace:"nowrap",
+    maxWidth:140, overflow:"hidden", textOverflow:"ellipsis",
+  };
+
+  if(result.correct === true){
+    return (
+      <span style={{display:"inline-flex", alignItems:"center", gap:6, flexShrink:0}}>
+        <span title="Correct" style={{...circleBase, background:"#E4F0E2", color:"#4C7A4C"}}>✓</span>
+        {result.correctAnswer && (
+          <span style={{...revealBase, color:"#4C7A4C"}} title={`Correct answer: ${result.correctAnswer}`}>
+            {result.correctAnswer}
+          </span>
+        )}
+      </span>
+    );
+  }
+  if(result.correct === false){
+    return (
+      <span style={{display:"inline-flex", alignItems:"center", gap:6, flexShrink:0}}>
+        <span title="Incorrect" style={{...circleBase, background:"#F4DADA", color:"#8C2E2E"}}>✗</span>
+        {result.correctAnswer && (
+          <span style={{...revealBase, color:"#8C2E2E"}} title={`Correct answer: ${result.correctAnswer}`}>
+            {result.correctAnswer}
+          </span>
+        )}
+      </span>
+    );
+  }
+  // correct === null — skipped (missing-key / unsupported / out-of-range).
+  const reason = result.skipReason || "not-graded";
+  return (
+    <span title={`Not graded: ${reason}`} style={{...circleBase, background:"#FFF1DE", color:"#9A5B1F"}}>—</span>
+  );
+}
+
 // One block per worksheet inside an assignment. Reads catalogEntry via
 // Session 14's catalog join to produce bubble-sheet inputs; falls through to
 // a per-worksheet textarea when the catalog match or questionIds[] is missing.
 // Answer state is owned by the parent SubmissionEditor — this component is
 // a controlled view.
-function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLocked, indexLabel}){
+//
+// Session 15: `results` is an optional per-question array from the graded
+// submission doc, indexed by questionIndex. When present (and isLocked),
+// each row renders a correctness glyph next to the answer.
+function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLocked, indexLabel, results}){
   const hasCatalog = !!(catalogEntry && Array.isArray(catalogEntry.questionIds) && catalogEntry.questionIds.length > 0);
   const format = hasCatalog ? catalogEntry.answerFormat : null;
   const pdfUrl = (catalogEntry && catalogEntry.stu) || worksheet.url || null;
@@ -5676,7 +5732,9 @@ function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLo
       </div>
 
       {hasCatalog ? (
-        <div style={{display:"grid", gridTemplateColumns:"minmax(0, 1fr) 260px", gap:20, alignItems:"start"}}>
+        // Session 15: widen the answer column when graded to accommodate
+        // the per-row correctness indicator + correct-answer reveal.
+        <div style={{display:"grid", gridTemplateColumns: (isLocked && results) ? "minmax(0, 1fr) 340px" : "minmax(0, 1fr) 260px", gap:20, alignItems:"start"}}>
           <InlinePdfViewer url={pdfUrl}/>
           <div style={{display:"flex", flexDirection:"column", gap:8}}>
             {catalogEntry.questionIds.map((_qid, i) => (
@@ -5687,6 +5745,9 @@ function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLo
                 <div style={{flex:1, minWidth:0}}>
                   {renderRow(i)}
                 </div>
+                {isLocked && results && (
+                  <AnswerResultIndicator result={results[i]}/>
+                )}
               </div>
             ))}
           </div>
@@ -5957,6 +6018,22 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     return ()=>{ if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current); };
   }, [answersByWorksheet, legacyText, status, isLockedNow]);
 
+  // Session 15: auto-grade data from the onSubmissionSubmit trigger.
+  // Group submission.perQuestion[] by worksheetId → array indexed by questionIndex.
+  // Must be defined BEFORE the early returns below to keep the hook order
+  // stable across loading/error/ready transitions (rules of hooks).
+  const perQuestionByWorksheet = useMemo(()=>{
+    const out = {};
+    const pq = submission && Array.isArray(submission.perQuestion) ? submission.perQuestion : null;
+    if(!pq) return out;
+    for(const e of pq){
+      if(!e || !e.worksheetId) continue;
+      if(!out[e.worksheetId]) out[e.worksheetId] = [];
+      out[e.worksheetId][e.questionIndex] = e;
+    }
+    return out;
+  }, [submission]);
+
   // Status rendering
   if(status === "loading" || (catalogStatus === "loading" && hasAnyWorksheets)){
     return (
@@ -5984,6 +6061,42 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     return "";
   })();
 
+  // Banner state: graded / skipped / awaiting. Only shown when isLocked.
+  // Not a hook — plain derived value — so it can live after early returns.
+  // Mirrors the trigger's three outcomes:
+  //   - scoreCorrect/scoreTotal set          → graded
+  //   - gradeSkipReason set                  → skipped
+  //   - neither set but status === submitted → awaiting (trigger in flight)
+  const gradeBanner = (()=>{
+    if(!isLocked || !submission) return null;
+    if(typeof submission.scoreCorrect === "number" && typeof submission.scoreTotal === "number"){
+      const total = submission.scoreTotal;
+      const correct = submission.scoreCorrect;
+      const missed = total - correct;
+      const tone = total === 0 ? "#66708A" : (missed === 0 ? "#4C7A4C" : (correct === 0 ? "#8C2E2E" : "#9A5B1F"));
+      const border = total === 0 ? "rgba(102,112,138,.35)" : (missed === 0 ? "rgba(76,122,76,.4)" : (correct === 0 ? "rgba(140,46,46,.4)" : "rgba(154,91,31,.4)"));
+      return {
+        kind: "graded",
+        label: `Auto-graded: ${correct} / ${total}`,
+        tone, border,
+      };
+    }
+    if(submission.gradeSkipReason){
+      return {
+        kind: "skipped",
+        label: `Not auto-graded (${submission.gradeSkipReason})`,
+        tone: "#9A5B1F",
+        border: "rgba(154,91,31,.4)",
+      };
+    }
+    return {
+      kind: "awaiting",
+      label: "Score pending…",
+      tone: "#66708A",
+      border: "rgba(102,112,138,.35)",
+    };
+  })();
+
   // Submit-enabled check against current in-memory state.
   const fakeResponses = legacyMode
     ? [{worksheetId: null, questionIndex: 0, studentAnswer: legacyText}]
@@ -6003,8 +6116,22 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
         {assignment.date || assignment.dateAssigned || "Assignment"}
       </div>
       {isLocked && displayDate && (
-        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", textTransform:"uppercase", letterSpacing:1, marginBottom:14}}>
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", textTransform:"uppercase", letterSpacing:1, marginBottom:8}}>
           Submitted {displayDate}
+        </div>
+      )}
+      {gradeBanner && (
+        <div style={{
+          display:"inline-block",
+          fontFamily:"'IBM Plex Mono',monospace", fontSize:11, fontWeight:600,
+          color: gradeBanner.tone,
+          background:"transparent",
+          border: `1px solid ${gradeBanner.border}`,
+          padding:"6px 12px", borderRadius:4,
+          textTransform:"uppercase", letterSpacing:.6,
+          marginBottom:14,
+        }}>
+          {gradeBanner.label}
         </div>
       )}
 
@@ -6053,6 +6180,7 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
             onAnswersChange={(next)=> setAnswersByWorksheet(prev => ({...prev, [w.id]: next}))}
             isLocked={isLocked}
             indexLabel={`Worksheet ${idx+1} of ${worksheetsStable.length}`}
+            results={perQuestionByWorksheet[w.id]}
           />
         ))
       )}

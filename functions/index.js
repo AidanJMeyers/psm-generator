@@ -4,11 +4,17 @@
 // Session 11b adds:  assignToWise, sendStudentMessage (write path, gated
 //                    on WISE_WRITE_ENABLED; redirect to DEV_TEST_RECIPIENT_EMAIL
 //                    when the gate is false).
+// Session 15 adds:   onSubmissionSubmit Firestore trigger for auto-grading
+//                    + flag-gated Wise score post-back.
 //
-// No Firestore triggers (Session 15).
+// Session 16 will migrate assignToWise + onSubmissionSubmit's post-back from
+// the Wise chat API to the Wise discussion/announcement API (createAnnouncements).
 
+const fs = require("fs");
+const path = require("path");
 const admin = require("firebase-admin");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { logger } = require("firebase-functions/v2");
 
 const {
@@ -25,8 +31,43 @@ const {
   ensureAdminChat,
   sendChatMessage,
 } = require("./wise");
+const { gradeSubmission } = require("./grade");
 
 admin.initializeApp();
+
+// ── Catalog loader (lazy, module-scoped cache) ────────────────────────────
+//
+// worksheets_catalog.json is the Hosting static asset at project root,
+// copied into functions/ at deploy time via firebase.json predeploy hook.
+// Load once per cold start, build the title→row Map, reuse for every
+// trigger invocation.
+//
+// Returns null if the file is missing (e.g. local emulator without a
+// predeploy run). The trigger treats a missing catalog as "skip grading."
+
+let _catalogByTitleCache = null;
+let _catalogLoadAttempted = false;
+
+function loadCatalogByTitle() {
+  if (_catalogByTitleCache) return _catalogByTitleCache;
+  if (_catalogLoadAttempted) return null;
+  _catalogLoadAttempted = true;
+  try {
+    const p = path.join(__dirname, "worksheets_catalog.json");
+    const raw = fs.readFileSync(p, "utf8");
+    const rows = JSON.parse(raw);
+    const map = new Map();
+    for (const row of rows) {
+      if (row && row.title) map.set(row.title, row);
+    }
+    _catalogByTitleCache = map;
+    logger.info("catalog loaded", { rows: rows.length, titles: map.size });
+    return map;
+  } catch (err) {
+    logger.error("catalog load failed", { error: err.message });
+    return null;
+  }
+}
 
 // ── reconcileStudentsWithWise ─────────────────────────────────────────────
 //
@@ -392,5 +433,153 @@ exports.sendStudentMessage = onCall(
       messageId,
       reusedChat: reused,
     };
+  }
+);
+
+// ── onSubmissionSubmit (Session 15) ───────────────────────────────────────
+//
+// Firestore trigger. Fires on every update to
+//   students/{sid}/submissions/{subId}
+// and grades iff the update transitioned status draft → submitted.
+//
+// Idempotent: if `after.gradedAt` is already set, skip. At-least-once
+// delivery means this trigger can re-fire after a crash, and we must not
+// double-write the score or double-send the Wise post-back.
+//
+// Security: trigger runs under the function's service account via the
+// Admin SDK, which bypasses Firestore rules. The student client cannot
+// write scoreCorrect/scoreTotal/perQuestion/gradedAt (see firestore.rules
+// line 109's hasOnly clause). This is the intended trust model.
+//
+// Wise post-back: uses the same resolveRecipient() helper as assignToWise,
+// so when WISE_WRITE_ENABLED=false the score message routes to
+// DEV_TEST_RECIPIENT_EMAIL. Session 16 migrates this call from
+// sendChatMessage to the createAnnouncements (discussion) API.
+//
+// Error handling: grade-write errors throw (trigger will retry). Wise
+// post-back errors are logged and swallowed — a failed Wise post must
+// NOT un-grade the submission.
+
+exports.onSubmissionSubmit = onDocumentUpdated(
+  {
+    document: "students/{sid}/submissions/{subId}",
+    region: "us-central1",
+    // No Wise secrets — Session 15 (Kiran directive) removed the Wise
+    // post-back. The trigger only reads/writes Firestore.
+    maxInstances: 10,
+    timeoutSeconds: 120,
+  },
+  async (event) => {
+    const before = event.data && event.data.before && event.data.before.data();
+    const after  = event.data && event.data.after  && event.data.after.data();
+    if (!before || !after) {
+      logger.warn("onSubmissionSubmit: missing before/after snapshot");
+      return;
+    }
+
+    // Gate: only grade on draft → submitted transitions.
+    if (before.status !== "draft" || after.status !== "submitted") {
+      return;
+    }
+
+    // Idempotency: don't re-grade if this submission already has a score.
+    if (after.gradedAt) {
+      logger.info("onSubmissionSubmit: already graded, skipping", {
+        sid: event.params.sid,
+        subId: event.params.subId,
+      });
+      return;
+    }
+
+    const { sid, subId } = event.params;
+    logger.info("onSubmissionSubmit: start", { sid, subId });
+
+    const db = admin.firestore();
+
+    // Load the student doc to find the assignment.
+    const studentRef = db.collection("students").doc(sid);
+    const studentSnap = await studentRef.get();
+    if (!studentSnap.exists) {
+      logger.error("onSubmissionSubmit: student not found", { sid, subId });
+      return;
+    }
+    const student = studentSnap.data() || {};
+    const assignments = Array.isArray(student.assignments) ? student.assignments : [];
+    const assignment = assignments.find((a) => a && a.id === after.assignmentId);
+    if (!assignment) {
+      logger.warn("onSubmissionSubmit: assignment not found on student", {
+        sid, subId, assignmentId: after.assignmentId,
+      });
+      return;
+    }
+
+    // Catalog (bundled at deploy time).
+    const catalogByTitle = loadCatalogByTitle();
+    if (!catalogByTitle) {
+      logger.error("onSubmissionSubmit: catalog missing, cannot grade", { sid, subId });
+      return;
+    }
+
+    // Collect every questionId we need for this submission, then batch-fetch.
+    const neededIds = new Set();
+    const worksheetById = new Map();
+    for (const w of (assignment.worksheets || [])) {
+      if (w && w.id) worksheetById.set(w.id, w);
+    }
+    for (const r of (after.responses || [])) {
+      const w = r && worksheetById.get(r.worksheetId);
+      if (!w) continue;
+      const row = catalogByTitle.get(w.title);
+      if (!row || !Array.isArray(row.questionIds)) continue;
+      const qi = Number(r.questionIndex);
+      if (qi < 0 || qi >= row.questionIds.length) continue;
+      const qid = row.questionIds[qi];
+      if (qid) neededIds.add(qid);
+    }
+
+    const questionKeysById = new Map();
+    if (neededIds.size > 0) {
+      const refs = Array.from(neededIds).map((id) => db.collection("questionKeys").doc(id));
+      const snaps = await db.getAll(...refs);
+      for (const s of snaps) {
+        if (s.exists) questionKeysById.set(s.id, s.data());
+      }
+    }
+
+    const result = gradeSubmission({
+      submission: after,
+      assignment,
+      catalogByTitle,
+      questionKeysById,
+    });
+
+    if (result.status === "skipped") {
+      logger.info("onSubmissionSubmit: skipped", { sid, subId, reason: result.reason });
+      // Write a minimal marker so the tutor UI can distinguish "not graded
+      // because unsupported" from "not graded yet." gradedAt is written so
+      // idempotency check fires on re-delivery.
+      await event.data.after.ref.update({
+        gradedAt: admin.firestore.FieldValue.serverTimestamp(),
+        gradeSkipReason: result.reason,
+      });
+      return;
+    }
+
+    // Graded: write back the score fields. Session 15 (Kiran directive):
+    // scores are shown in the portal UI only — no Wise post-back. The only
+    // Wise write path for PSMs is the assign-time discussion that Session 16
+    // will wire up (createAnnouncements), and it's tutor-initiated, not
+    // triggered by submissions.
+    await event.data.after.ref.update({
+      scoreCorrect: result.scoreCorrect,
+      scoreTotal:   result.scoreTotal,
+      perQuestion:  result.perQuestion,
+      gradedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+    logger.info("onSubmissionSubmit: graded", {
+      sid, subId,
+      scoreCorrect: result.scoreCorrect,
+      scoreTotal:   result.scoreTotal,
+    });
   }
 );

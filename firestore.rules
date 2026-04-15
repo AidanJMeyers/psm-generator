@@ -75,6 +75,27 @@ service cloud.firestore {
       allow list, write: if isAllowlistAdmin();
     }
 
+    // ── questionKeys (answer bank) — Session 15 ─────────────────────────
+    // Per-CB-question-ID answer documents populated by the Session 12
+    // extraction script via Admin SDK. Tutor/admin can read individual
+    // docs for debug and audit; students and parents NEVER read this
+    // collection (that would leak the answer key to the test-taker).
+    //
+    // Grading is server-side — the onSubmissionSubmit Cloud Function
+    // uses the Admin SDK, which bypasses these rules, to join responses
+    // against questionKeys and write only the per-question result back
+    // to the submission doc. The student sees their score, never the key.
+    //
+    // `get` not `read`: tutor clients can fetch a specific doc by id
+    // but cannot enumerate the 1,067-doc collection. Tighter default;
+    // widen to `read` only if a future session adds a tutor-side
+    // browse UI for the answer bank. The extraction script and the
+    // grader trigger both use Admin SDK and are unaffected by this.
+    match /questionKeys/{questionId} {
+      allow get:   if isTutorOrAdmin();
+      allow write: if false;
+    }
+
     // ── Legacy blob ──────────────────────────────────────────────────────
     // Houses customAssignments permanently and mirrors students[] during
     // the DUAL_WRITE_GRACE window. Students/parents never read this doc
