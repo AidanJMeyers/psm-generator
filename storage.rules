@@ -1,0 +1,52 @@
+rules_version = '2';
+
+// PSM Generator — Firebase Storage security rules
+//
+// Session 14 (2026-04-14): first real Storage rules on this bucket. Default
+// rules were `allow read, write: if false` — blocks every client read of
+// worksheet PDFs uploaded by Session 12's migration. This file opens
+// /worksheets/* for any authenticated allowlisted user (tutor/admin/student/
+// parent) so pdf.js can render them inline in SubmissionEditor.
+//
+// Scope note: worksheets are NOT per-student. The same PDF is assigned to
+// many students, so there is no studentId path segment to gate on. This is
+// intentionally a weaker gate than Firestore's canReadStudent() — any
+// allowlisted role can fetch any worksheet PDF. For the 51-user pilot this
+// matches the effective access level of WS_RAW (baked into the bundle).
+// Public launch would require per-user signed URLs via a Cloud Function.
+//
+// Source of truth: docs/superpowers/specs/2026-04-14-session-14-submission-editor-design.md
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function emailKey() {
+      return request.auth.token.email.lower();
+    }
+
+    function isAllowlisted() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && firestore.exists(/databases/(default)/documents/allowlist/$(emailKey()))
+        && firestore.get(/databases/(default)/documents/allowlist/$(emailKey())).data.active == true;
+    }
+
+    function allowlistRole() {
+      return firestore.get(/databases/(default)/documents/allowlist/$(emailKey())).data.role;
+    }
+
+    function canReadWorksheet() {
+      return isAllowlisted()
+        && allowlistRole() in ['tutor', 'admin', 'student', 'parent'];
+    }
+
+    match /worksheets/{file=**} {
+      allow read: if canReadWorksheet();
+      allow write: if false;  // admin SDK only
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1050,6 +1050,42 @@ function usePortalStudent(studentId){
 // session. The Firestore rules from Phase 2 Session 2 allow reads only for
 // tutor/admin or linked student/parent, neither of which a ?dev=1-only session
 // satisfies — sign in for real first.
+
+// Module-cached fetch of the static worksheets catalog hosted at
+// /worksheets_catalog.json. Session 14 reads this instead of WS_RAW for
+// per-question metadata (questionIds, answerFormat) that Session 12 populated.
+// Shared promise — multiple SubmissionEditor instances on the same page
+// resolve against one fetch.
+let __worksheetCatalogPromise = null;
+function fetchWorksheetCatalog(){
+  if(__worksheetCatalogPromise) return __worksheetCatalogPromise;
+  __worksheetCatalogPromise = fetch("/worksheets_catalog.json", {cache:"force-cache"})
+    .then(r => {
+      if(!r.ok) throw new Error(`catalog fetch ${r.status}`);
+      return r.json();
+    })
+    .catch(err => {
+      __worksheetCatalogPromise = null;  // allow retry on next hook mount
+      throw err;
+    });
+  return __worksheetCatalogPromise;
+}
+function useWorksheetCatalog(){
+  const [state, setState] = useState({status:"loading", catalog:null});
+  useEffect(()=>{
+    let alive = true;
+    fetchWorksheetCatalog().then(
+      catalog => { if(alive) setState({status:"ready", catalog}); },
+      err => {
+        console.warn("[portal] catalog fetch failed:", err);
+        if(alive) setState({status:"error", catalog:null});
+      }
+    );
+    return ()=>{ alive = false; };
+  }, []);
+  return state;
+}
+
 function useSubmissionDraft(studentId, assignmentId){
   const [state, setState] = useState({status:"loading", submission:null});
   useEffect(()=>{
@@ -1799,16 +1835,38 @@ function makeReviewPayload({scoreCorrect, scoreTotal, reviewerNotes}){
 function canSubmitDraft(submission){
   if(!submission) return false;
   if(submission.status !== "draft") return false;
-  const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
-  const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
-  return text.length > 0;
+  if(!Array.isArray(submission.responses)) return false;
+  for(const r of submission.responses){
+    const text = (r && typeof r.studentAnswer === "string") ? r.studentAnswer.trim() : "";
+    if(text.length > 0) return true;
+  }
+  return false;
 }
 
-function makeDraftPayload({assignmentId, answersText, isCreate}){
+function makeDraftPayload({assignmentId, answersText, answersByWorksheet, catalogByWorksheetId, isCreate}){
   const FV = firebase.firestore.FieldValue;
+  let responses;
+  if(answersByWorksheet && catalogByWorksheetId){
+    // Nested shape — one entry per question per worksheet, flat + tagged.
+    responses = [];
+    for(const wId of Object.keys(answersByWorksheet)){
+      const answers = answersByWorksheet[wId] || [];
+      const expectedLength = catalogByWorksheetId[wId]?.questionIds?.length ?? answers.length;
+      for(let i=0; i<expectedLength; i++){
+        responses.push({
+          worksheetId: wId,
+          questionIndex: i,
+          studentAnswer: typeof answers[i] === "string" ? answers[i] : "",
+        });
+      }
+    }
+  } else {
+    // Legacy single-blob shape — zero-worksheet fallback or Phase 2 resume.
+    responses = [{worksheetId: null, questionIndex: 0, studentAnswer: answersText || ""}];
+  }
   const base = {
     assignmentId,
-    responses: [{questionIndex: 0, studentAnswer: answersText || ""}],
+    responses,
     status: "draft",
     updatedAt: FV.serverTimestamp(),
   };
@@ -4985,47 +5043,23 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   const [tab, setTab] = useState("tracking");
   const {status, student} = usePortalStudent(studentId);
-  // Session 13: pending-assignment handoff from the Wise deep link. Read
-  // once on mount; the real SubmissionEditor open lands in Session 14.
-  const [pendingAssignment, setPendingAssignment] = useState(()=>{
+  // Session 14: deep-link handoff — read once on mount, validate s===studentId,
+  // then clear the key and force the history tab so SubmissionEditor opens directly.
+  const [deepLinkAssignmentId] = useState(()=>{
     if(typeof sessionStorage === "undefined") return null;
     try{
-      const raw = sessionStorage.getItem(PENDING_ASSIGNMENT_KEY);
-      if(!raw) return null;
-      const parsed = JSON.parse(raw);
-      // Only surface the banner if the deep-link s= matches the portal's
-      // studentId — otherwise a parent's pendingAssignment would bleed
-      // across children. Silently ignore mismatches (they aren't an error;
-      // they just mean this isn't the right portal view yet).
-      if(parsed && parsed.s && parsed.s !== studentId) return null;
-      return parsed;
-    }catch{ return null; }
+      const raw = JSON.parse(sessionStorage.getItem(PENDING_ASSIGNMENT_KEY) || "null");
+      if(raw && raw.a && raw.s && raw.s === studentId) return raw.a;
+    }catch{}
+    return null;
   });
-  const dismissPendingAssignment = ()=>{
-    setPendingAssignment(null);
-    try{ sessionStorage.removeItem(PENDING_ASSIGNMENT_KEY); }catch{}
-  };
-  const pendingAssignmentBanner = pendingAssignment ? (
-    <div style={{
-      marginBottom:24,padding:"16px 20px",borderRadius:10,
-      background:"#fff7ec",border:"1px solid rgba(154,91,31,.35)",
-      display:"flex",alignItems:"flex-start",gap:14,
-    }}>
-      <div style={{flex:1}}>
-        <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 48',fontSize:15,fontWeight:600,color:"#0F1A2E",marginBottom:4,letterSpacing:-.1}}>
-          Your tutor sent you a worksheet
-        </div>
-        <div style={{fontSize:13,lineHeight:1.55,color:"#4A5570"}}>
-          Assignment <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{pendingAssignment.a}</span> is ready. The in-browser worksheet editor is shipping in the next update — until then, use Assignment History to track your progress.
-        </div>
-      </div>
-      <button onClick={dismissPendingAssignment} style={{
-        border:"1px solid rgba(15,26,46,.2)",background:"#fff",color:"#0F1A2E",
-        padding:"8px 14px",borderRadius:8,fontFamily:"'Fraunces',Georgia,serif",fontSize:12,
-        fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",
-      }}>Dismiss</button>
-    </div>
-  ) : null;
+  useEffect(()=>{
+    if(deepLinkAssignmentId){
+      try{ sessionStorage.removeItem(PENDING_ASSIGNMENT_KEY); }catch{}
+      setTab("history");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if(status === "loading"){
     return (
@@ -5038,7 +5072,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "error"){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#8C2E2E",letterSpacing:-.2}}>
             Couldn't load your student record. Try reloading.
@@ -5051,7 +5084,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "not-found" || !student){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:10}}>
             No student record linked to this account.
@@ -5066,7 +5098,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
 
   return (
     <PortalShell studentName={student.name} studentGrade={student.grade} onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-      {pendingAssignmentBanner}
       <div style={{display:"flex",gap:28,marginBottom:24,borderBottom:"1px solid rgba(15,26,46,.12)",flexWrap:"wrap"}}>
         {[
           {id:"tracking", label:"Score Tracking"},
@@ -5090,7 +5121,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
       </div>
 
       {tab==="tracking" && <PortalTrackingTab student={student}/>}
-      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry}/>}
+      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry} deepLinkAssignmentId={deepLinkAssignmentId}/>}
       {tab==="trends"   && <PortalTrendsTab student={student}/>}
     </PortalShell>
   );
@@ -5348,9 +5379,14 @@ function PortalEmptyInline({copy}){
     </div>
   );
 }
-function PortalHistoryTab({student, studentId, currentUserEntry}){
+function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignmentId}){
   const [openAssignmentId, setOpenAssignmentId] = useState(null);
   const assignments = (student.assignments||[]).filter(a=>!a.deleted);
+  useEffect(()=>{
+    if(!deepLinkAssignmentId) return;
+    const exists = (student.assignments||[]).filter(a=>!a.deleted).some(a=>a.id===deepLinkAssignmentId);
+    if(exists) setOpenAssignmentId(deepLinkAssignmentId);
+  }, [deepLinkAssignmentId, student]);
   const role = currentUserEntry?.role || null;
   const canEdit = role === "student";
 
@@ -5498,13 +5534,310 @@ const SUBMIT_BTN_STYLE_DISABLED = {
   ...SUBMIT_BTN_STYLE, background:"#C9CEDC", cursor:"not-allowed",
 };
 
+// Inline PDF viewer using pdf.js (loaded globally by index.html). Fetches the
+// URL client-side and rasterizes each page to a canvas. Renders a graceful
+// "couldn't load" fallback on any error — CORS (OneDrive), 403 (Storage rules),
+// network, or pdf.js not loaded. Answer rows always remain usable.
+function InlinePdfViewer({url}){
+  const containerRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+  const [pageCount, setPageCount] = useState(0);
+
+  useEffect(()=>{
+    let cancelled = false;
+    const container = containerRef.current;
+    if(!container) return;
+    if(!url){ setStatus("error"); return; }
+    if(!window.pdfjsLib){ setStatus("error"); return; }
+
+    // Clear any prior render if the URL changes.
+    container.innerHTML = "";
+    setStatus("loading");
+    setPageCount(0);
+
+    (async () => {
+      try {
+        const pdf = await window.pdfjsLib.getDocument({url}).promise;
+        if(cancelled) return;
+        setPageCount(pdf.numPages);
+        for(let pageNum=1; pageNum<=pdf.numPages; pageNum++){
+          if(cancelled) return;
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({scale: 1.35});
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          canvas.style.display = "block";
+          canvas.style.marginBottom = "8px";
+          canvas.style.maxWidth = "100%";
+          canvas.style.height = "auto";
+          canvas.style.boxShadow = "0 1px 3px rgba(15,26,46,.12)";
+          container.appendChild(canvas);
+          const ctx = canvas.getContext("2d");
+          await page.render({canvasContext: ctx, viewport}).promise;
+        }
+        if(!cancelled) setStatus("ready");
+      } catch(err){
+        console.warn("[portal] pdf viewer error:", err);
+        if(!cancelled) setStatus("error");
+      }
+    })();
+
+    return ()=>{ cancelled = true; };
+  }, [url]);
+
+  return (
+    <div style={{
+      border:"1px solid rgba(15,26,46,.1)", borderRadius:8, padding:10,
+      background:"#F7F5EF", maxHeight:600, overflowY:"auto", boxSizing:"border-box",
+    }}>
+      {status === "loading" && (
+        <div style={{textAlign:"center", padding:"40px 0", fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", letterSpacing:1, textTransform:"uppercase"}}>
+          Loading PDF…
+        </div>
+      )}
+      {status === "error" && (
+        <div style={{textAlign:"center", padding:"40px 12px"}}>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif", fontStyle:"italic", color:"#8C2E2E", fontSize:14, marginBottom:8}}>
+            Couldn't load the PDF here.
+          </div>
+          {url && (
+            <a href={url} target="_blank" rel="noopener noreferrer" style={{
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#9A5B1F",
+              letterSpacing:1, textTransform:"uppercase", textDecoration:"none",
+              border:"1px solid rgba(154,91,31,.4)", padding:"6px 12px", borderRadius:4,
+              display:"inline-block",
+            }}>Open externally →</a>
+          )}
+        </div>
+      )}
+      <div ref={containerRef} style={{display: status==="ready" ? "block" : "none"}}/>
+      {status === "ready" && pageCount > 0 && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", textAlign:"center", marginTop:4, letterSpacing:1}}>
+          {pageCount} PAGE{pageCount===1?"":"S"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One block per worksheet inside an assignment. Reads catalogEntry via
+// Session 14's catalog join to produce bubble-sheet inputs; falls through to
+// a per-worksheet textarea when the catalog match or questionIds[] is missing.
+// Answer state is owned by the parent SubmissionEditor — this component is
+// a controlled view.
+function WorksheetBlock({worksheet, catalogEntry, answers, onAnswersChange, isLocked, indexLabel}){
+  const hasCatalog = !!(catalogEntry && Array.isArray(catalogEntry.questionIds) && catalogEntry.questionIds.length > 0);
+  const format = hasCatalog ? catalogEntry.answerFormat : null;
+  const pdfUrl = (catalogEntry && catalogEntry.stu) || worksheet.url || null;
+
+  const headerTitle = worksheet.title || `${worksheet.domain||""} — ${worksheet.difficulty||""}`;
+  const headerSub = [worksheet.subject, worksheet.domain, worksheet.difficulty].filter(Boolean).join(" · ");
+
+  const setAnswerAt = (i, value) => {
+    if(isLocked) return;
+    const next = answers.slice();
+    while(next.length <= i) next.push("");
+    next[i] = value;
+    onAnswersChange(next);
+  };
+
+  const renderRow = (i) => {
+    const value = answers[i] || "";
+    if(format === "multiple-choice"){
+      return renderMcRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    if(format === "free-response"){
+      return renderFrRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    if(format === "mixed"){
+      return renderMixedRow(i, value, v => setAnswerAt(i, v), isLocked);
+    }
+    return null;
+  };
+
+  return (
+    <div style={{
+      marginTop:20, paddingTop:20,
+      borderTop:"1px solid rgba(15,26,46,.12)",
+    }}>
+      <div style={{marginBottom:12}}>
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", letterSpacing:1, textTransform:"uppercase", marginBottom:4}}>
+          {indexLabel}
+        </div>
+        <div style={{fontFamily:"'Fraunces',Georgia,serif", fontSize:18, color:"#0F1A2E", fontWeight:600, letterSpacing:-.1}}>
+          {headerTitle}
+        </div>
+        {headerSub && (
+          <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", marginTop:2}}>
+            {headerSub}
+          </div>
+        )}
+      </div>
+
+      {hasCatalog ? (
+        <div style={{display:"grid", gridTemplateColumns:"minmax(0, 1fr) minmax(0, 1fr)", gap:16, alignItems:"start"}}>
+          <InlinePdfViewer url={pdfUrl}/>
+          <div style={{display:"flex", flexDirection:"column", gap:8}}>
+            {catalogEntry.questionIds.map((_qid, i) => (
+              <div key={i} style={{display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom:"1px solid rgba(15,26,46,.05)"}}>
+                <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:11, color:"#66708A", width:24, flexShrink:0}}>
+                  {i+1}.
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  {renderRow(i)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#8C6A2E", marginBottom:8, fontStyle:"italic"}}>
+            No bubble sheet available for this worksheet — type your answers below.
+          </div>
+          {pdfUrl && <InlinePdfViewer url={pdfUrl}/>}
+          <textarea
+            value={answers[0] || ""}
+            onChange={e => setAnswerAt(0, e.target.value)}
+            disabled={isLocked}
+            placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
+            style={{
+              width:"100%", minHeight:160, padding:"12px 14px", borderRadius:8,
+              border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
+              fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical",
+              boxSizing:"border-box", marginTop:10,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// MC row: A/B/C/D chip row. Chip click sets answer to that letter; clicking
+// the selected letter clears it.
+function renderMcRow(i, value, onChange, isLocked){
+  const letters = ["A","B","C","D"];
+  return (
+    <div style={{display:"flex", gap:6}}>
+      {letters.map(L => {
+        const selected = value === L;
+        return (
+          <button
+            key={L}
+            disabled={isLocked}
+            onClick={()=> onChange(selected ? "" : L)}
+            style={{
+              width:36, height:32, borderRadius:6,
+              border:`1px solid ${selected?"#0F1A2E":"rgba(15,26,46,.22)"}`,
+              background: selected?"#0F1A2E":"#fff",
+              color: selected?"#fff":"#0F1A2E",
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:13, fontWeight:600,
+              cursor: isLocked?"not-allowed":"pointer",
+            }}
+          >{L}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// FR row: single numeric input. Text type (not number) so "3/4" and "0.25" both work.
+function renderFrRow(i, value, onChange, isLocked){
+  return (
+    <input
+      type="text"
+      value={value}
+      disabled={isLocked}
+      onChange={e => onChange(e.target.value)}
+      placeholder="Your answer"
+      style={{
+        width:"100%", maxWidth:220, padding:"8px 12px", borderRadius:6,
+        border:"1px solid rgba(15,26,46,.22)",
+        fontFamily:"'IBM Plex Mono',monospace", fontSize:13, color:"#0F1A2E",
+        boxSizing:"border-box",
+      }}
+    />
+  );
+}
+
+// Mixed row: both MC chips AND a numeric input, both live. Whichever the
+// student fills wins. If both are filled, the text input takes precedence
+// (last-write-wins on the shared answer slot).
+function renderMixedRow(i, value, onChange, isLocked){
+  const isMc = value === "A" || value === "B" || value === "C" || value === "D";
+  return (
+    <div style={{display:"flex", gap:10, alignItems:"center", flexWrap:"wrap"}}>
+      {renderMcRow(i, isMc ? value : "", onChange, isLocked)}
+      <span style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", letterSpacing:1}}>OR</span>
+      <input
+        type="text"
+        value={isMc ? "" : value}
+        disabled={isLocked}
+        onChange={e => onChange(e.target.value)}
+        placeholder="Numeric"
+        style={{
+          flex:"1 1 140px", maxWidth:180, padding:"8px 12px", borderRadius:6,
+          border:"1px solid rgba(15,26,46,.22)",
+          fontFamily:"'IBM Plex Mono',monospace", fontSize:13, color:"#0F1A2E",
+          boxSizing:"border-box",
+        }}
+      />
+    </div>
+  );
+}
+
 // Per-assignment submission entry. Drill-in from PortalHistoryTab. Parents
 // reach this in readOnly mode — never editable. Students in editable mode
 // autosave drafts to /students/{id}/submissions/{subId} on a 750ms debounce
 // and lock to "submitted" via a single write when they click Submit.
 function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const {status, submission} = useSubmissionDraft(studentId, assignment.id);
-  const [text, setText] = useState("");
+  const {status: catalogStatus, catalog} = useWorksheetCatalog();
+
+  const welledCount = (assignment.welledDomain||[]).filter(w => !w.deleted).length;
+  const examCount = (assignment.practiceExams||[]).filter(e => !e.deleted).length;
+
+  // Dedupe worksheet ids defensively — if the assignment doc has collisions
+  // or missing ids, suffix with the positional index. Memoized on
+  // assignment.worksheets to keep the array reference stable across renders,
+  // which keeps catalogByWorksheetId and the seed effect from firing on every
+  // render (which would infinite-loop via setAnswersByWorksheet).
+  const worksheetsStable = useMemo(()=>{
+    const seen = new Set();
+    return (assignment.worksheets||[]).filter(w => !w.deleted).map((w, idx) => {
+      let id = w.id;
+      if(!id || seen.has(id)){
+        const newId = `${id || "w"}-${idx}`;
+        console.warn("[portal] worksheet id collision or missing, rekey", id, "->", newId);
+        id = newId;
+      }
+      seen.add(id);
+      return {...w, id};
+    });
+  }, [assignment.worksheets]);
+
+  // Build catalogByWorksheetId once per catalog/worksheets change.
+  const catalogByWorksheetId = useMemo(()=>{
+    if(catalogStatus !== "ready" || !catalog) return {};
+    const out = {};
+    for(const w of worksheetsStable){
+      const entry = catalog.find(c => c.title === w.title);
+      if(entry && Array.isArray(entry.questionIds) && entry.questionIds.length > 0){
+        out[w.id] = entry;
+      }
+    }
+    return out;
+  }, [catalogStatus, catalog, worksheetsStable]);
+
+  // Legacy mode: zero worksheets on the assignment (only WellEd / practice exams).
+  const hasAnyWorksheets = worksheetsStable.length > 0;
+  const legacyMode = !hasAnyWorksheets;
+
+  // State
+  const [answersByWorksheet, setAnswersByWorksheet] = useState({});
+  const [legacyText, setLegacyText] = useState("");
   const submissionIdRef = useRef(null);
   const [localStatus, setLocalStatus] = useState("draft");
   const [submittedAt, setSubmittedAt] = useState(null);
@@ -5512,39 +5845,69 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const pendingTimerRef = useRef(null);
   const writeDraftRef = useRef(null);
 
+  // Seed from loaded submission.
   useEffect(()=>{
     if(status !== "ready" || !submission) return;
     submissionIdRef.current = submission.id;
-    const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
-    setText((r && r.studentAnswer) || "");
     setLocalStatus(submission.status || "draft");
     setSubmittedAt(submission.submittedAt || null);
-  }, [status, submission]);
 
-  // Fresh writeDraft closure every render so the debounced timer always sees
-  // the latest text/isLocked without re-creating the timer on every keystroke.
+    if(legacyMode){
+      const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
+      setLegacyText((r && r.studentAnswer) || "");
+      return;
+    }
+
+    // Group existing responses by worksheetId.
+    const grouped = {};
+    if(Array.isArray(submission.responses)){
+      for(const r of submission.responses){
+        const wId = r.worksheetId;
+        if(!wId) continue;
+        if(!grouped[wId]) grouped[wId] = [];
+        grouped[wId][r.questionIndex] = r.studentAnswer || "";
+      }
+    }
+    // Pad each worksheet's array to its expected length.
+    const next = {};
+    for(const w of worksheetsStable){
+      const entry = catalogByWorksheetId[w.id];
+      const expected = entry?.questionIds?.length || 1;
+      const existing = grouped[w.id] || [];
+      const padded = [];
+      for(let i=0; i<expected; i++) padded.push(existing[i] || "");
+      next[w.id] = padded;
+    }
+    setAnswersByWorksheet(next);
+  }, [status, submission, legacyMode, catalogByWorksheetId, worksheetsStable]);
+
   const isLockedNow = readOnly || localStatus === "submitted";
-  writeDraftRef.current = async (answersText) => {
+
+  writeDraftRef.current = async () => {
     if(isLockedNow) return;
     const col = studentSubmissionsCollection(studentId);
     if(!col) return;
+    const payload = legacyMode
+      ? makeDraftPayload({
+          assignmentId: assignment.id,
+          answersText: legacyText,
+          isCreate: !submissionIdRef.current,
+        })
+      : makeDraftPayload({
+          assignmentId: assignment.id,
+          answersByWorksheet,
+          catalogByWorksheetId,
+          isCreate: !submissionIdRef.current,
+        });
     try{
       if(!submissionIdRef.current){
         const newRef = col.doc();
         submissionIdRef.current = newRef.id;
-        await newRef.set(makeDraftPayload({
-          assignmentId: assignment.id,
-          answersText,
-          isCreate: true,
-        }));
+        await newRef.set(payload);
       } else {
-        await col.doc(submissionIdRef.current).update(
-          makeDraftPayload({
-            assignmentId: assignment.id,
-            answersText,
-            isCreate: false,
-          })
-        );
+        // Drop createdAt from update (it's only set on create).
+        const {createdAt: _drop, ...updatePayload} = payload;
+        await col.doc(submissionIdRef.current).update(updatePayload);
       }
     } catch(err){
       console.warn("[portal] draft write error:", err);
@@ -5553,14 +5916,20 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
 
   const handleSubmit = async () => {
     if(isLockedNow || submittingState) return;
-    if(!canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:text}]})) return;
+    const fakeResponses = legacyMode
+      ? [{worksheetId: null, questionIndex: 0, studentAnswer: legacyText}]
+      : (()=>{
+          const out = [];
+          for(const wId of Object.keys(answersByWorksheet)){
+            (answersByWorksheet[wId]||[]).forEach((a, i) => out.push({worksheetId: wId, questionIndex: i, studentAnswer: a}));
+          }
+          return out;
+        })();
+    if(!canSubmitDraft({status:"draft", responses: fakeResponses})) return;
     setSubmittingState(true);
     try{
-      if(pendingTimerRef.current){
-        clearTimeout(pendingTimerRef.current);
-        pendingTimerRef.current = null;
-      }
-      if(writeDraftRef.current) await writeDraftRef.current(text);
+      if(pendingTimerRef.current){ clearTimeout(pendingTimerRef.current); pendingTimerRef.current = null; }
+      if(writeDraftRef.current) await writeDraftRef.current();
       const id = submissionIdRef.current;
       if(!id) throw new Error("no submission id after flush");
       await studentSubmissionsCollection(studentId).doc(id).update({
@@ -5577,21 +5946,19 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     }
   };
 
-  // Debounced autosave. Fires 750ms after the last keystroke. Skipped while
-  // the initial query is still loading (would race with the seed effect).
+  // Debounced autosave on any answer change.
   useEffect(()=>{
     if(isLockedNow) return;
     if(status !== "ready" && status !== "not-found") return;
     if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
     pendingTimerRef.current = setTimeout(()=>{
-      if(writeDraftRef.current) writeDraftRef.current(text);
+      if(writeDraftRef.current) writeDraftRef.current();
     }, 750);
-    return ()=>{
-      if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
-    };
-  }, [text, status, isLockedNow]);
+    return ()=>{ if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current); };
+  }, [answersByWorksheet, legacyText, status, isLockedNow]);
 
-  if(status === "loading"){
+  // Status rendering
+  if(status === "loading" || (catalogStatus === "loading" && hasAnyWorksheets)){
     return (
       <div style={{...CARD, padding:"40px 24px", textAlign:"center"}}>
         <div style={{fontFamily:"'Fraunces',Georgia,serif", color:"#66708A"}}>Loading…</div>
@@ -5613,12 +5980,21 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const displayDate = (()=>{
     if(!submittedAt) return "";
     if(typeof submittedAt === "string") return submittedAt.slice(0,10);
-    if(submittedAt.toDate) {
-      try { return submittedAt.toDate().toISOString().slice(0,10); }
-      catch { return ""; }
-    }
+    if(submittedAt.toDate){ try { return submittedAt.toDate().toISOString().slice(0,10); } catch { return ""; } }
     return "";
   })();
+
+  // Submit-enabled check against current in-memory state.
+  const fakeResponses = legacyMode
+    ? [{worksheetId: null, questionIndex: 0, studentAnswer: legacyText}]
+    : (()=>{
+        const out = [];
+        for(const wId of Object.keys(answersByWorksheet)){
+          (answersByWorksheet[wId]||[]).forEach((a, i) => out.push({worksheetId: wId, questionIndex: i, studentAnswer: a}));
+        }
+        return out;
+      })();
+  const submitEnabled = !isLocked && canSubmitDraft({status:"draft", responses: fakeResponses}) && !submittingState;
 
   return (
     <div style={{...CARD, padding:"24px 22px"}}>
@@ -5631,36 +6007,67 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
           Submitted {displayDate}
         </div>
       )}
-      {isLocked ? (
-        <div style={{whiteSpace:"pre-wrap", fontFamily:"'Fraunces',Georgia,serif", fontSize:15, color:"#0F1A2E", lineHeight:1.55, padding:"14px 0", borderTop:"1px solid rgba(15,26,46,.08)", borderBottom:"1px solid rgba(15,26,46,.08)"}}>
-          {text || <span style={{color:"#66708A", fontStyle:"italic"}}>No answer recorded.</span>}
+
+      {catalogStatus === "error" && hasAnyWorksheets && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:11, color:"#8C6A2E", background:"#FFF4E0", border:"1px solid rgba(140,106,46,.25)", borderRadius:6, padding:"8px 12px", marginTop:10}}>
+          Couldn't load worksheet metadata — using simple mode.
+        </div>
+      )}
+
+      {(welledCount > 0 || examCount > 0) && !legacyMode && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", marginTop:12, padding:"8px 12px", background:"rgba(15,26,46,.04)", borderRadius:6, lineHeight:1.5}}>
+          This assignment also includes{" "}
+          {welledCount > 0 && <span>{welledCount} WellEd item{welledCount===1?"":"s"}</span>}
+          {welledCount > 0 && examCount > 0 && " and "}
+          {examCount > 0 && <span>{examCount} practice exam{examCount===1?"":"s"}</span>}
+          . Engage with those outside the portal.
+        </div>
+      )}
+
+      {legacyMode ? (
+        <div style={{marginTop:14}}>
+          {isLocked ? (
+            <div style={{whiteSpace:"pre-wrap", fontFamily:"'Fraunces',Georgia,serif", fontSize:15, color:"#0F1A2E", lineHeight:1.55, padding:"14px 0", borderTop:"1px solid rgba(15,26,46,.08)", borderBottom:"1px solid rgba(15,26,46,.08)"}}>
+              {legacyText || <span style={{color:"#66708A", fontStyle:"italic"}}>No answer recorded.</span>}
+            </div>
+          ) : (
+            <textarea
+              value={legacyText}
+              onChange={e => setLegacyText(e.target.value)}
+              placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
+              style={{
+                width:"100%", minHeight:260, padding:"14px 16px", borderRadius:8,
+                border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
+                fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical", boxSizing:"border-box",
+              }}
+            />
+          )}
         </div>
       ) : (
-        <textarea
-          value={text}
-          onChange={e=>setText(e.target.value)}
-          placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
-          style={{
-            width:"100%", minHeight:260, padding:"14px 16px", borderRadius:8,
-            border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
-            fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical", boxSizing:"border-box",
-          }}
-        />
+        worksheetsStable.map((w, idx) => (
+          <WorksheetBlock
+            key={w.id}
+            worksheet={w}
+            catalogEntry={catalogByWorksheetId[w.id]}
+            answers={answersByWorksheet[w.id] || []}
+            onAnswersChange={(next)=> setAnswersByWorksheet(prev => ({...prev, [w.id]: next}))}
+            isLocked={isLocked}
+            indexLabel={`Worksheet ${idx+1} of ${worksheetsStable.length}`}
+          />
+        ))
       )}
-      {!isLocked && (() => {
-        const enabled = canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:text}]}) && !submittingState;
-        return (
-          <div style={{marginTop:16, display:"flex", justifyContent:"flex-end"}}>
-            <button
-              disabled={!enabled}
-              onClick={handleSubmit}
-              style={enabled ? SUBMIT_BTN_STYLE : SUBMIT_BTN_STYLE_DISABLED}
-            >
-              {submittingState ? "Submitting…" : "Submit"}
-            </button>
-          </div>
-        );
-      })()}
+
+      {!isLocked && (
+        <div style={{marginTop:24, display:"flex", justifyContent:"flex-end"}}>
+          <button
+            disabled={!submitEnabled}
+            onClick={handleSubmit}
+            style={submitEnabled ? SUBMIT_BTN_STYLE : SUBMIT_BTN_STYLE_DISABLED}
+          >
+            {submittingState ? "Submitting…" : "Submit"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

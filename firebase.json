@@ -2,6 +2,9 @@
   "firestore": {
     "rules": "firestore.rules"
   },
+  "storage": {
+    "rules": "storage.rules"
+  },
   "functions": [
     {
       "source": "functions",
@@ -22,6 +25,7 @@
       "firebase.json",
       ".firebaserc",
       "firestore.rules",
+      "storage.rules",
       "app.jsx",
       "build_index.py",
       "embed.js",

@@ -59,7 +59,7 @@ jobs:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           npx --yes firebase-tools@13 deploy \
-            --only hosting \
+            --only hosting,storage \
             --project psm-generator \
             --token "$FIREBASE_TOKEN" \
             --non-interactive
