@@ -5144,7 +5144,48 @@ function renderMixedRow(i, value, onChange, isLocked){
 // and lock to "submitted" via a single write when they click Submit.
 function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const {status, submission} = useSubmissionDraft(studentId, assignment.id);
-  const [text, setText] = useState("");
+  const {status: catalogStatus, catalog} = useWorksheetCatalog();
+
+  const worksheets = (assignment.worksheets||[]).filter(w => !w.deleted);
+  const welledCount = (assignment.welledDomain||[]).filter(w => !w.deleted).length;
+  const examCount = (assignment.practiceExams||[]).filter(e => !e.deleted).length;
+
+  // Dedupe worksheet ids defensively — if the assignment doc has collisions
+  // or missing ids, suffix with the positional index. Logged once.
+  const worksheetsStable = (()=>{
+    const seen = new Set();
+    return worksheets.map((w, idx) => {
+      let id = w.id;
+      if(!id || seen.has(id)){
+        const newId = `${id || "w"}-${idx}`;
+        console.warn("[portal] worksheet id collision or missing, rekey", id, "->", newId);
+        id = newId;
+      }
+      seen.add(id);
+      return {...w, id};
+    });
+  })();
+
+  // Build catalogByWorksheetId once per catalog/worksheets change.
+  const catalogByWorksheetId = useMemo(()=>{
+    if(catalogStatus !== "ready" || !catalog) return {};
+    const out = {};
+    for(const w of worksheetsStable){
+      const entry = catalog.find(c => c.title === w.title);
+      if(entry && Array.isArray(entry.questionIds) && entry.questionIds.length > 0){
+        out[w.id] = entry;
+      }
+    }
+    return out;
+  }, [catalogStatus, catalog, worksheetsStable]);
+
+  // Legacy mode: zero worksheets on the assignment (only WellEd / practice exams).
+  const hasAnyWorksheets = worksheetsStable.length > 0;
+  const legacyMode = !hasAnyWorksheets;
+
+  // State
+  const [answersByWorksheet, setAnswersByWorksheet] = useState({});
+  const [legacyText, setLegacyText] = useState("");
   const submissionIdRef = useRef(null);
   const [localStatus, setLocalStatus] = useState("draft");
   const [submittedAt, setSubmittedAt] = useState(null);
@@ -5152,39 +5193,69 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const pendingTimerRef = useRef(null);
   const writeDraftRef = useRef(null);
 
+  // Seed from loaded submission.
   useEffect(()=>{
     if(status !== "ready" || !submission) return;
     submissionIdRef.current = submission.id;
-    const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
-    setText((r && r.studentAnswer) || "");
     setLocalStatus(submission.status || "draft");
     setSubmittedAt(submission.submittedAt || null);
-  }, [status, submission]);
 
-  // Fresh writeDraft closure every render so the debounced timer always sees
-  // the latest text/isLocked without re-creating the timer on every keystroke.
+    if(legacyMode){
+      const r = Array.isArray(submission.responses) ? submission.responses[0] : null;
+      setLegacyText((r && r.studentAnswer) || "");
+      return;
+    }
+
+    // Group existing responses by worksheetId.
+    const grouped = {};
+    if(Array.isArray(submission.responses)){
+      for(const r of submission.responses){
+        const wId = r.worksheetId;
+        if(!wId) continue;
+        if(!grouped[wId]) grouped[wId] = [];
+        grouped[wId][r.questionIndex] = r.studentAnswer || "";
+      }
+    }
+    // Pad each worksheet's array to its expected length.
+    const next = {};
+    for(const w of worksheetsStable){
+      const entry = catalogByWorksheetId[w.id];
+      const expected = entry?.questionIds?.length || 1;
+      const existing = grouped[w.id] || [];
+      const padded = [];
+      for(let i=0; i<expected; i++) padded.push(existing[i] || "");
+      next[w.id] = padded;
+    }
+    setAnswersByWorksheet(next);
+  }, [status, submission, legacyMode, catalogByWorksheetId, worksheetsStable]);
+
   const isLockedNow = readOnly || localStatus === "submitted";
-  writeDraftRef.current = async (answersText) => {
+
+  writeDraftRef.current = async () => {
     if(isLockedNow) return;
     const col = studentSubmissionsCollection(studentId);
     if(!col) return;
+    const payload = legacyMode
+      ? makeDraftPayload({
+          assignmentId: assignment.id,
+          answersText: legacyText,
+          isCreate: !submissionIdRef.current,
+        })
+      : makeDraftPayload({
+          assignmentId: assignment.id,
+          answersByWorksheet,
+          catalogByWorksheetId,
+          isCreate: !submissionIdRef.current,
+        });
     try{
       if(!submissionIdRef.current){
         const newRef = col.doc();
         submissionIdRef.current = newRef.id;
-        await newRef.set(makeDraftPayload({
-          assignmentId: assignment.id,
-          answersText,
-          isCreate: true,
-        }));
+        await newRef.set(payload);
       } else {
-        await col.doc(submissionIdRef.current).update(
-          makeDraftPayload({
-            assignmentId: assignment.id,
-            answersText,
-            isCreate: false,
-          })
-        );
+        // Drop createdAt from update (it's only set on create).
+        const {createdAt: _drop, ...updatePayload} = payload;
+        await col.doc(submissionIdRef.current).update(updatePayload);
       }
     } catch(err){
       console.warn("[portal] draft write error:", err);
@@ -5193,14 +5264,20 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
 
   const handleSubmit = async () => {
     if(isLockedNow || submittingState) return;
-    if(!canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:text}]})) return;
+    const fakeResponses = legacyMode
+      ? [{worksheetId: null, questionIndex: 0, studentAnswer: legacyText}]
+      : (()=>{
+          const out = [];
+          for(const wId of Object.keys(answersByWorksheet)){
+            (answersByWorksheet[wId]||[]).forEach((a, i) => out.push({worksheetId: wId, questionIndex: i, studentAnswer: a}));
+          }
+          return out;
+        })();
+    if(!canSubmitDraft({status:"draft", responses: fakeResponses})) return;
     setSubmittingState(true);
     try{
-      if(pendingTimerRef.current){
-        clearTimeout(pendingTimerRef.current);
-        pendingTimerRef.current = null;
-      }
-      if(writeDraftRef.current) await writeDraftRef.current(text);
+      if(pendingTimerRef.current){ clearTimeout(pendingTimerRef.current); pendingTimerRef.current = null; }
+      if(writeDraftRef.current) await writeDraftRef.current();
       const id = submissionIdRef.current;
       if(!id) throw new Error("no submission id after flush");
       await studentSubmissionsCollection(studentId).doc(id).update({
@@ -5217,21 +5294,19 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
     }
   };
 
-  // Debounced autosave. Fires 750ms after the last keystroke. Skipped while
-  // the initial query is still loading (would race with the seed effect).
+  // Debounced autosave on any answer change.
   useEffect(()=>{
     if(isLockedNow) return;
     if(status !== "ready" && status !== "not-found") return;
     if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
     pendingTimerRef.current = setTimeout(()=>{
-      if(writeDraftRef.current) writeDraftRef.current(text);
+      if(writeDraftRef.current) writeDraftRef.current();
     }, 750);
-    return ()=>{
-      if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
-    };
-  }, [text, status, isLockedNow]);
+    return ()=>{ if(pendingTimerRef.current) clearTimeout(pendingTimerRef.current); };
+  }, [answersByWorksheet, legacyText, status, isLockedNow]);
 
-  if(status === "loading"){
+  // Status rendering
+  if(status === "loading" || (catalogStatus === "loading" && hasAnyWorksheets)){
     return (
       <div style={{...CARD, padding:"40px 24px", textAlign:"center"}}>
         <div style={{fontFamily:"'Fraunces',Georgia,serif", color:"#66708A"}}>Loading…</div>
@@ -5253,12 +5328,21 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
   const displayDate = (()=>{
     if(!submittedAt) return "";
     if(typeof submittedAt === "string") return submittedAt.slice(0,10);
-    if(submittedAt.toDate) {
-      try { return submittedAt.toDate().toISOString().slice(0,10); }
-      catch { return ""; }
-    }
+    if(submittedAt.toDate){ try { return submittedAt.toDate().toISOString().slice(0,10); } catch { return ""; } }
     return "";
   })();
+
+  // Submit-enabled check against current in-memory state.
+  const fakeResponses = legacyMode
+    ? [{worksheetId: null, questionIndex: 0, studentAnswer: legacyText}]
+    : (()=>{
+        const out = [];
+        for(const wId of Object.keys(answersByWorksheet)){
+          (answersByWorksheet[wId]||[]).forEach((a, i) => out.push({worksheetId: wId, questionIndex: i, studentAnswer: a}));
+        }
+        return out;
+      })();
+  const submitEnabled = !isLocked && canSubmitDraft({status:"draft", responses: fakeResponses}) && !submittingState;
 
   return (
     <div style={{...CARD, padding:"24px 22px"}}>
@@ -5271,36 +5355,67 @@ function SubmissionEditor({studentId, assignment, readOnly, onClose}){
           Submitted {displayDate}
         </div>
       )}
-      {isLocked ? (
-        <div style={{whiteSpace:"pre-wrap", fontFamily:"'Fraunces',Georgia,serif", fontSize:15, color:"#0F1A2E", lineHeight:1.55, padding:"14px 0", borderTop:"1px solid rgba(15,26,46,.08)", borderBottom:"1px solid rgba(15,26,46,.08)"}}>
-          {text || <span style={{color:"#66708A", fontStyle:"italic"}}>No answer recorded.</span>}
+
+      {catalogStatus === "error" && hasAnyWorksheets && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:11, color:"#8C6A2E", background:"#FFF4E0", border:"1px solid rgba(140,106,46,.25)", borderRadius:6, padding:"8px 12px", marginTop:10}}>
+          Couldn't load worksheet metadata — using simple mode.
+        </div>
+      )}
+
+      {(welledCount > 0 || examCount > 0) && !legacyMode && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", marginTop:12, padding:"8px 12px", background:"rgba(15,26,46,.04)", borderRadius:6, lineHeight:1.5}}>
+          This assignment also includes{" "}
+          {welledCount > 0 && <span>{welledCount} WellEd item{welledCount===1?"":"s"}</span>}
+          {welledCount > 0 && examCount > 0 && " and "}
+          {examCount > 0 && <span>{examCount} practice exam{examCount===1?"":"s"}</span>}
+          . Engage with those outside the portal.
+        </div>
+      )}
+
+      {legacyMode ? (
+        <div style={{marginTop:14}}>
+          {isLocked ? (
+            <div style={{whiteSpace:"pre-wrap", fontFamily:"'Fraunces',Georgia,serif", fontSize:15, color:"#0F1A2E", lineHeight:1.55, padding:"14px 0", borderTop:"1px solid rgba(15,26,46,.08)", borderBottom:"1px solid rgba(15,26,46,.08)"}}>
+              {legacyText || <span style={{color:"#66708A", fontStyle:"italic"}}>No answer recorded.</span>}
+            </div>
+          ) : (
+            <textarea
+              value={legacyText}
+              onChange={e => setLegacyText(e.target.value)}
+              placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
+              style={{
+                width:"100%", minHeight:260, padding:"14px 16px", borderRadius:8,
+                border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
+                fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical", boxSizing:"border-box",
+              }}
+            />
+          )}
         </div>
       ) : (
-        <textarea
-          value={text}
-          onChange={e=>setText(e.target.value)}
-          placeholder={"Type your answers here. Example:\n\n1. B\n2. C\n3. A"}
-          style={{
-            width:"100%", minHeight:260, padding:"14px 16px", borderRadius:8,
-            border:"1px solid rgba(15,26,46,.2)", fontFamily:"'IBM Plex Mono',monospace",
-            fontSize:14, lineHeight:1.6, color:"#0F1A2E", resize:"vertical", boxSizing:"border-box",
-          }}
-        />
+        worksheetsStable.map((w, idx) => (
+          <WorksheetBlock
+            key={w.id}
+            worksheet={w}
+            catalogEntry={catalogByWorksheetId[w.id]}
+            answers={answersByWorksheet[w.id] || []}
+            onAnswersChange={(next)=> setAnswersByWorksheet(prev => ({...prev, [w.id]: next}))}
+            isLocked={isLocked}
+            indexLabel={`Worksheet ${idx+1} of ${worksheetsStable.length}`}
+          />
+        ))
       )}
-      {!isLocked && (() => {
-        const enabled = canSubmitDraft({status:"draft", responses:[{questionIndex:0, studentAnswer:text}]}) && !submittingState;
-        return (
-          <div style={{marginTop:16, display:"flex", justifyContent:"flex-end"}}>
-            <button
-              disabled={!enabled}
-              onClick={handleSubmit}
-              style={enabled ? SUBMIT_BTN_STYLE : SUBMIT_BTN_STYLE_DISABLED}
-            >
-              {submittingState ? "Submitting…" : "Submit"}
-            </button>
-          </div>
-        );
-      })()}
+
+      {!isLocked && (
+        <div style={{marginTop:24, display:"flex", justifyContent:"flex-end"}}>
+          <button
+            disabled={!submitEnabled}
+            onClick={handleSubmit}
+            style={submitEnabled ? SUBMIT_BTN_STYLE : SUBMIT_BTN_STYLE_DISABLED}
+          >
+            {submittingState ? "Submitting…" : "Submit"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
