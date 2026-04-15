@@ -4862,6 +4862,93 @@ const SUBMIT_BTN_STYLE_DISABLED = {
   ...SUBMIT_BTN_STYLE, background:"#C9CEDC", cursor:"not-allowed",
 };
 
+// Inline PDF viewer using pdf.js (loaded globally by index.html). Fetches the
+// URL client-side and rasterizes each page to a canvas. Renders a graceful
+// "couldn't load" fallback on any error — CORS (OneDrive), 403 (Storage rules),
+// network, or pdf.js not loaded. Answer rows always remain usable.
+function InlinePdfViewer({url}){
+  const containerRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+  const [pageCount, setPageCount] = useState(0);
+
+  useEffect(()=>{
+    let cancelled = false;
+    const container = containerRef.current;
+    if(!container) return;
+    if(!url){ setStatus("error"); return; }
+    if(!window.pdfjsLib){ setStatus("error"); return; }
+
+    // Clear any prior render if the URL changes.
+    container.innerHTML = "";
+    setStatus("loading");
+    setPageCount(0);
+
+    (async () => {
+      try {
+        const pdf = await window.pdfjsLib.getDocument({url}).promise;
+        if(cancelled) return;
+        setPageCount(pdf.numPages);
+        for(let pageNum=1; pageNum<=pdf.numPages; pageNum++){
+          if(cancelled) return;
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({scale: 1.35});
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          canvas.style.display = "block";
+          canvas.style.marginBottom = "8px";
+          canvas.style.maxWidth = "100%";
+          canvas.style.height = "auto";
+          canvas.style.boxShadow = "0 1px 3px rgba(15,26,46,.12)";
+          container.appendChild(canvas);
+          const ctx = canvas.getContext("2d");
+          await page.render({canvasContext: ctx, viewport}).promise;
+        }
+        if(!cancelled) setStatus("ready");
+      } catch(err){
+        console.warn("[portal] pdf viewer error:", err);
+        if(!cancelled) setStatus("error");
+      }
+    })();
+
+    return ()=>{ cancelled = true; };
+  }, [url]);
+
+  return (
+    <div style={{
+      border:"1px solid rgba(15,26,46,.1)", borderRadius:8, padding:10,
+      background:"#F7F5EF", maxHeight:600, overflowY:"auto", boxSizing:"border-box",
+    }}>
+      {status === "loading" && (
+        <div style={{textAlign:"center", padding:"40px 0", fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#66708A", letterSpacing:1, textTransform:"uppercase"}}>
+          Loading PDF…
+        </div>
+      )}
+      {status === "error" && (
+        <div style={{textAlign:"center", padding:"40px 12px"}}>
+          <div style={{fontFamily:"'Fraunces',Georgia,serif", fontStyle:"italic", color:"#8C2E2E", fontSize:14, marginBottom:8}}>
+            Couldn't load the PDF here.
+          </div>
+          {url && (
+            <a href={url} target="_blank" rel="noopener noreferrer" style={{
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:10, color:"#9A5B1F",
+              letterSpacing:1, textTransform:"uppercase", textDecoration:"none",
+              border:"1px solid rgba(154,91,31,.4)", padding:"6px 12px", borderRadius:4,
+              display:"inline-block",
+            }}>Open externally →</a>
+          )}
+        </div>
+      )}
+      <div ref={containerRef} style={{display: status==="ready" ? "block" : "none"}}/>
+      {status === "ready" && pageCount > 0 && (
+        <div style={{fontFamily:"'IBM Plex Mono',monospace", fontSize:9, color:"#66708A", textAlign:"center", marginTop:4, letterSpacing:1}}>
+          {pageCount} PAGE{pageCount===1?"":"S"}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Per-assignment submission entry. Drill-in from PortalHistoryTab. Parents
 // reach this in readOnly mode — never editable. Students in editable mode
 // autosave drafts to /students/{id}/submissions/{subId} on a 750ms debounce
