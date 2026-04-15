@@ -17,31 +17,29 @@ rules_version = '2';
 //
 // Source of truth: docs/superpowers/specs/2026-04-14-session-14-submission-editor-design.md
 
+// Session 14 fallback: simplified rule that does NOT cross-service call
+// Firestore. Cross-service firestore.get() from Storage rules turned out to
+// be unreliable in production (PDFs 403'd despite a valid allowlist entry).
+// This rule gates reads on verified-email Firebase Auth sessions only,
+// which in practice means "anyone on the allowlist" because the rest of the
+// app routes un-allowlisted sign-ins to a "please ask to be added" screen
+// before they can trigger any portal UI that reads worksheets.
+//
+// Security tradeoff: weaker than the original design — any signed-in
+// verified-email user can fetch any worksheet PDF. For the 51-user pilot
+// this is acceptable; public launch requires per-user signed URLs via a
+// Cloud Function.
+
 service firebase.storage {
   match /b/{bucket}/o {
 
-    function emailKey() {
-      return request.auth.token.email.lower();
-    }
-
-    function isAllowlisted() {
+    function isVerifiedSignedIn() {
       return request.auth != null
-        && request.auth.token.email_verified == true
-        && firestore.exists(/databases/(default)/documents/allowlist/$(emailKey()))
-        && firestore.get(/databases/(default)/documents/allowlist/$(emailKey())).data.active == true;
-    }
-
-    function allowlistRole() {
-      return firestore.get(/databases/(default)/documents/allowlist/$(emailKey())).data.role;
-    }
-
-    function canReadWorksheet() {
-      return isAllowlisted()
-        && allowlistRole() in ['tutor', 'admin', 'student', 'parent'];
+        && request.auth.token.email_verified == true;
     }
 
     match /worksheets/{file=**} {
-      allow read: if canReadWorksheet();
+      allow read: if isVerifiedSignedIn();
       allow write: if false;  // admin SDK only
     }
 
