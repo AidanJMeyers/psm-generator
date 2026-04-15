@@ -378,6 +378,42 @@ function usePortalStudent(studentId){
 // session. The Firestore rules from Phase 2 Session 2 allow reads only for
 // tutor/admin or linked student/parent, neither of which a ?dev=1-only session
 // satisfies — sign in for real first.
+
+// Module-cached fetch of the static worksheets catalog hosted at
+// /worksheets_catalog.json. Session 14 reads this instead of WS_RAW for
+// per-question metadata (questionIds, answerFormat) that Session 12 populated.
+// Shared promise — multiple SubmissionEditor instances on the same page
+// resolve against one fetch.
+let __worksheetCatalogPromise = null;
+function fetchWorksheetCatalog(){
+  if(__worksheetCatalogPromise) return __worksheetCatalogPromise;
+  __worksheetCatalogPromise = fetch("/worksheets_catalog.json", {cache:"force-cache"})
+    .then(r => {
+      if(!r.ok) throw new Error(`catalog fetch ${r.status}`);
+      return r.json();
+    })
+    .catch(err => {
+      __worksheetCatalogPromise = null;  // allow retry on next hook mount
+      throw err;
+    });
+  return __worksheetCatalogPromise;
+}
+function useWorksheetCatalog(){
+  const [state, setState] = useState({status:"loading", catalog:null});
+  useEffect(()=>{
+    let alive = true;
+    fetchWorksheetCatalog().then(
+      catalog => { if(alive) setState({status:"ready", catalog}); },
+      err => {
+        console.warn("[portal] catalog fetch failed:", err);
+        if(alive) setState({status:"error", catalog:null});
+      }
+    );
+    return ()=>{ alive = false; };
+  }, []);
+  return state;
+}
+
 function useSubmissionDraft(studentId, assignmentId){
   const [state, setState] = useState({status:"loading", submission:null});
   useEffect(()=>{
