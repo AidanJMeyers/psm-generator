@@ -4371,47 +4371,23 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   const [tab, setTab] = useState("tracking");
   const {status, student} = usePortalStudent(studentId);
-  // Session 13: pending-assignment handoff from the Wise deep link. Read
-  // once on mount; the real SubmissionEditor open lands in Session 14.
-  const [pendingAssignment, setPendingAssignment] = useState(()=>{
+  // Session 14: deep-link handoff — read once on mount, validate s===studentId,
+  // then clear the key and force the history tab so SubmissionEditor opens directly.
+  const [deepLinkAssignmentId] = useState(()=>{
     if(typeof sessionStorage === "undefined") return null;
     try{
-      const raw = sessionStorage.getItem(PENDING_ASSIGNMENT_KEY);
-      if(!raw) return null;
-      const parsed = JSON.parse(raw);
-      // Only surface the banner if the deep-link s= matches the portal's
-      // studentId — otherwise a parent's pendingAssignment would bleed
-      // across children. Silently ignore mismatches (they aren't an error;
-      // they just mean this isn't the right portal view yet).
-      if(parsed && parsed.s && parsed.s !== studentId) return null;
-      return parsed;
-    }catch{ return null; }
+      const raw = JSON.parse(sessionStorage.getItem(PENDING_ASSIGNMENT_KEY) || "null");
+      if(raw && raw.a && raw.s && raw.s === studentId) return raw.a;
+    }catch{}
+    return null;
   });
-  const dismissPendingAssignment = ()=>{
-    setPendingAssignment(null);
-    try{ sessionStorage.removeItem(PENDING_ASSIGNMENT_KEY); }catch{}
-  };
-  const pendingAssignmentBanner = pendingAssignment ? (
-    <div style={{
-      marginBottom:24,padding:"16px 20px",borderRadius:10,
-      background:"#fff7ec",border:"1px solid rgba(154,91,31,.35)",
-      display:"flex",alignItems:"flex-start",gap:14,
-    }}>
-      <div style={{flex:1}}>
-        <div style={{fontFamily:"'Fraunces',Georgia,serif",fontVariationSettings:'"opsz" 48',fontSize:15,fontWeight:600,color:"#0F1A2E",marginBottom:4,letterSpacing:-.1}}>
-          Your tutor sent you a worksheet
-        </div>
-        <div style={{fontSize:13,lineHeight:1.55,color:"#4A5570"}}>
-          Assignment <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{pendingAssignment.a}</span> is ready. The in-browser worksheet editor is shipping in the next update — until then, use Assignment History to track your progress.
-        </div>
-      </div>
-      <button onClick={dismissPendingAssignment} style={{
-        border:"1px solid rgba(15,26,46,.2)",background:"#fff",color:"#0F1A2E",
-        padding:"8px 14px",borderRadius:8,fontFamily:"'Fraunces',Georgia,serif",fontSize:12,
-        fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",
-      }}>Dismiss</button>
-    </div>
-  ) : null;
+  useEffect(()=>{
+    if(deepLinkAssignmentId){
+      try{ sessionStorage.removeItem(PENDING_ASSIGNMENT_KEY); }catch{}
+      setTab("history");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if(status === "loading"){
     return (
@@ -4424,7 +4400,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "error"){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#8C2E2E",letterSpacing:-.2}}>
             Couldn't load your student record. Try reloading.
@@ -4437,7 +4412,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   if(status === "not-found" || !student){
     return (
       <PortalShell studentName="" onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-        {pendingAssignmentBanner}
         <div style={{...CARD, padding:"60px 40px", textAlign:"center", margin:"40px auto", maxWidth:520}}>
           <div style={{fontFamily:"'Fraunces',Georgia,serif",fontStyle:"italic",fontSize:22,color:"#66708A",letterSpacing:-.2,marginBottom:10}}>
             No student record linked to this account.
@@ -4452,7 +4426,6 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
 
   return (
     <PortalShell studentName={student.name} studentGrade={student.grade} onSignOut={onSignOut} currentUserEntry={currentUserEntry} switcherSlot={switcherSlot}>
-      {pendingAssignmentBanner}
       <div style={{display:"flex",gap:28,marginBottom:24,borderBottom:"1px solid rgba(15,26,46,.12)",flexWrap:"wrap"}}>
         {[
           {id:"tracking", label:"Score Tracking"},
@@ -4476,7 +4449,7 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
       </div>
 
       {tab==="tracking" && <PortalTrackingTab student={student}/>}
-      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry}/>}
+      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry} deepLinkAssignmentId={deepLinkAssignmentId}/>}
       {tab==="trends"   && <PortalTrendsTab student={student}/>}
     </PortalShell>
   );
@@ -4734,9 +4707,14 @@ function PortalEmptyInline({copy}){
     </div>
   );
 }
-function PortalHistoryTab({student, studentId, currentUserEntry}){
+function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignmentId}){
   const [openAssignmentId, setOpenAssignmentId] = useState(null);
   const assignments = (student.assignments||[]).filter(a=>!a.deleted);
+  useEffect(()=>{
+    if(!deepLinkAssignmentId) return;
+    const exists = (student.assignments||[]).filter(a=>!a.deleted).some(a=>a.id===deepLinkAssignmentId);
+    if(exists) setOpenAssignmentId(deepLinkAssignmentId);
+  }, [deepLinkAssignmentId, student]);
   const role = currentUserEntry?.role || null;
   const canEdit = role === "student";
 
