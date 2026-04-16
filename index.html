@@ -1765,6 +1765,26 @@ function isSubmissionReviewed(sub){
     && typeof sub.scoreCorrect === "number";
 }
 
+// Session 15: a submission is "stale-unscored" if it's been submitted for
+// more than ~30s and still has no scoreCorrect AND no gradeSkipReason AND
+// no gradedAt marker. This is how we distinguish the <1s race window
+// between submit-click and trigger-fire from genuinely-never-graded docs
+// (pre-Session-15 submissions, or trigger crashes). 30s is comfortably
+// above the normal cold-start + grade latency (~1-3s observed).
+function isSubmissionStaleUnscored(sub){
+  if(!sub || sub.status !== "submitted") return false;
+  if(typeof sub.scoreCorrect === "number") return false;
+  if(sub.gradeSkipReason) return false;
+  if(sub.gradedAt) return false;
+  if(!sub.submittedAt) return true; // no timestamp → assume stale
+  try {
+    const t = sub.submittedAt.toDate
+      ? sub.submittedAt.toDate()
+      : new Date(sub.submittedAt);
+    return (Date.now() - t.getTime()) > 30_000;
+  } catch { return true; }
+}
+
 // Rolling totals across all reviewed submissions for this student. Drafts and
 // unreviewed-submitted docs don't contribute to the question counts — they
 // surface separately so the tutor knows there's work left.
@@ -5043,6 +5063,13 @@ function StudentProfile({p,setProfile,ptab,setPtab,paChk,setPaChk,paSubj,setPaSu
 function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
   const [tab, setTab] = useState("tracking");
   const {status, student} = usePortalStudent(studentId);
+  // Session 15: listen to the student's own submissions so PortalHistoryTab
+  // can show per-assignment done pills and PortalTrackingTab can list PSM
+  // scores. The rules at firestore.rules:100 allow a linked student/parent to
+  // list their own submissions via canReadStudent, so this is safe.
+  // useTutorSubmissions is named historically (Phase 2 Session 3) but is a
+  // plain listener on students/{sid}/submissions — no tutor-only semantics.
+  const {submissions: portalSubmissions} = useTutorSubmissions(studentId);
   // Session 14: deep-link handoff — read once on mount, validate s===studentId,
   // then clear the key and force the history tab so SubmissionEditor opens directly.
   const [deepLinkAssignmentId] = useState(()=>{
@@ -5120,8 +5147,8 @@ function StudentPortal({studentId, onSignOut, currentUserEntry, switcherSlot}){
         })}
       </div>
 
-      {tab==="tracking" && <PortalTrackingTab student={student}/>}
-      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry} deepLinkAssignmentId={deepLinkAssignmentId}/>}
+      {tab==="tracking" && <PortalTrackingTab student={student} submissions={portalSubmissions}/>}
+      {tab==="history"  && <PortalHistoryTab student={student} studentId={studentId} currentUserEntry={currentUserEntry} deepLinkAssignmentId={deepLinkAssignmentId} submissions={portalSubmissions}/>}
       {tab==="trends"   && <PortalTrendsTab student={student}/>}
     </PortalShell>
   );
@@ -5271,7 +5298,7 @@ function ParentPortal({onSignOut, currentUserEntry}){
   );
 }
 
-function PortalTrackingTab({student}){
+function PortalTrackingTab({student, submissions}){
   const pts = allScoreDataPoints(student);
   const diagProfile = (student.diagnostics||[]).length ? buildDiagnosticProfile(student.diagnostics) : null;
   const welled = (student.welledLogs||[]).filter(l=>!l.deleted);
@@ -5282,7 +5309,34 @@ function PortalTrackingTab({student}){
     return isFull && pt.level!=="domain" && pt.level!=="sub";
   }).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
 
-  const anyData = fullPts.length>0 || diagProfile || welled.length>0;
+  // Session 15: PSM submissions with auto-grader scores. Listed newest-first,
+  // joined to the assignment's first worksheet title for a human label.
+  const psmRows = useMemo(()=>{
+    const submitted = (submissions||[]).filter(s => s && s.status === "submitted");
+    const assignmentsById = {};
+    for(const a of (student.assignments||[])){ if(a && a.id) assignmentsById[a.id] = a; }
+    const rows = submitted.map(s => {
+      const asg = assignmentsById[s.assignmentId] || null;
+      const worksheets = asg ? (asg.worksheets||[]).filter(w => !w.deleted) : [];
+      const label = worksheets.length === 0
+        ? (asg ? (asg.date || asg.dateAssigned || "Assignment") : "Assignment")
+        : (worksheets.length === 1 ? worksheets[0].title : `${worksheets[0].title} + ${worksheets.length - 1} more`);
+      const date = asg && (asg.date || asg.dateAssigned) ? (asg.date || asg.dateAssigned) : (s.submittedAt && s.submittedAt.toDate ? s.submittedAt.toDate().toISOString().slice(0,10) : "");
+      return {
+        id: s.id,
+        label,
+        date,
+        scoreCorrect: typeof s.scoreCorrect === "number" ? s.scoreCorrect : null,
+        scoreTotal:   typeof s.scoreTotal === "number" ? s.scoreTotal : null,
+        skipReason:   s.gradeSkipReason || null,
+        stale:        isSubmissionStaleUnscored(s),
+      };
+    });
+    rows.sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+    return rows;
+  }, [submissions, student]);
+
+  const anyData = fullPts.length>0 || diagProfile || welled.length>0 || psmRows.length>0;
 
   if(!anyData){
     return (
@@ -5299,6 +5353,44 @@ function PortalTrackingTab({student}){
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:24}}>
+      <div style={CARD}>
+        <PortalSectionHeading>PSM submissions</PortalSectionHeading>
+        {psmRows.length===0 ? (
+          <PortalEmptyInline copy="No PSMs submitted yet."/>
+        ) : (
+          <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>
+            <thead>
+              <tr style={{textAlign:"left",color:"#66708A",fontSize:10,letterSpacing:1,textTransform:"uppercase"}}>
+                <th style={{padding:"8px 8px 8px 0",borderBottom:"1px solid rgba(15,26,46,.12)"}}>Date</th>
+                <th style={{padding:"8px",borderBottom:"1px solid rgba(15,26,46,.12)"}}>PSM</th>
+                <th style={{padding:"8px",borderBottom:"1px solid rgba(15,26,46,.12)",textAlign:"right"}}>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {psmRows.map(r => {
+                const hasScore = r.scoreCorrect !== null && r.scoreTotal !== null;
+                const tone = !hasScore ? "#66708A"
+                  : r.scoreCorrect === r.scoreTotal ? "#4C7A4C"
+                  : r.scoreCorrect === 0 ? "#8C2E2E" : "#9A5B1F";
+                return (
+                  <tr key={r.id}>
+                    <td style={{padding:"10px 8px 10px 0",borderBottom:"1px solid rgba(15,26,46,.06)"}}>{r.date||"—"}</td>
+                    <td style={{padding:"10px 8px",borderBottom:"1px solid rgba(15,26,46,.06)",fontFamily:"'Fraunces',Georgia,serif",fontSize:14}}>{r.label}</td>
+                    <td style={{padding:"10px 8px",borderBottom:"1px solid rgba(15,26,46,.06)",textAlign:"right",fontWeight:600,color:tone}}>
+                      {hasScore
+                        ? `${r.scoreCorrect} / ${r.scoreTotal}`
+                        : r.skipReason ? `— (${r.skipReason})`
+                        : r.stale ? "not graded"
+                        : "pending"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       <div style={CARD}>
         <PortalSectionHeading>Practice exam history</PortalSectionHeading>
         {fullPts.length===0 ? (
@@ -5379,9 +5471,26 @@ function PortalEmptyInline({copy}){
     </div>
   );
 }
-function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignmentId}){
+function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignmentId, submissions}){
   const [openAssignmentId, setOpenAssignmentId] = useState(null);
   const assignments = (student.assignments||[]).filter(a=>!a.deleted);
+  // Session 15: build a quick {assignmentId → submission} map so each card
+  // can render a done pill + auto-grade score in the header. If multiple
+  // submissions exist for one assignment (shouldn't happen — submit is
+  // terminal — but be defensive), keep the latest submitted one.
+  const submittedByAssignment = useMemo(()=>{
+    const out = {};
+    for(const s of (submissions||[])){
+      if(!s || s.status !== "submitted") continue;
+      const prev = out[s.assignmentId];
+      if(!prev){ out[s.assignmentId] = s; continue; }
+      // Prefer the one with gradedAt set over one without; otherwise latest.
+      const prevGraded = typeof prev.scoreCorrect === "number";
+      const curGraded = typeof s.scoreCorrect === "number";
+      if(curGraded && !prevGraded) out[s.assignmentId] = s;
+    }
+    return out;
+  }, [submissions]);
   useEffect(()=>{
     if(!deepLinkAssignmentId) return;
     const exists = (student.assignments||[]).filter(a=>!a.deleted).some(a=>a.id===deepLinkAssignmentId);
@@ -5425,13 +5534,31 @@ function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignm
         const worksheets = (asg.worksheets||[]).filter(w=>!w.deleted);
         const welledDomain = (asg.welledDomain||[]).filter(w=>!w.deleted);
         const practiceExams = (asg.practiceExams||[]).filter(e=>!e.deleted);
+        // Session 15: per-assignment submission lookup for the done pill.
+        const sub = submittedByAssignment[asg.id] || null;
+        const isDone = !!sub;
+        const hasScore = sub && typeof sub.scoreCorrect === "number" && typeof sub.scoreTotal === "number";
+        const scorePillTone = !hasScore ? "#66708A"
+          : sub.scoreCorrect === sub.scoreTotal ? "#4C7A4C"
+          : sub.scoreCorrect === 0 ? "#8C2E2E" : "#9A5B1F";
+        const scorePillBorder = !hasScore ? "rgba(102,112,138,.35)"
+          : sub.scoreCorrect === sub.scoreTotal ? "rgba(76,122,76,.4)"
+          : sub.scoreCorrect === 0 ? "rgba(140,46,46,.4)" : "rgba(154,91,31,.4)";
+        const isStale = isSubmissionStaleUnscored(sub);
+        const scorePillLabel = !isDone ? null
+          : hasScore ? `Done · ${sub.scoreCorrect} / ${sub.scoreTotal}`
+          : isStale ? `Done · Not graded`
+          : `Done · Score pending…`;
         return (
-          <div key={asg.id} style={{...CARD, padding:20}}>
+          <div key={asg.id} style={{...CARD, padding:20, opacity: isDone ? 0.94 : 1}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,paddingBottom:12,borderBottom:"1px solid rgba(15,26,46,.08)",gap:12,flexWrap:"wrap"}}>
               <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:18,color:"#0F1A2E",fontWeight:600,letterSpacing:-.2}}>
                 {asg.date || asg.dateAssigned || "Undated session"}
               </div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {scorePillLabel && (
+                  <span style={{...mkPill("transparent", scorePillTone), border:`1px solid ${scorePillBorder}`, fontWeight:600}}>{scorePillLabel}</span>
+                )}
                 {worksheets.length>0 && <span style={{...mkPill("transparent","#003258"),border:"1px solid rgba(0,50,88,.28)"}}>{worksheets.length} Worksheet{worksheets.length===1?"":"s"}</span>}
                 {welledDomain.length>0 && <span style={{...mkPill("transparent","#4C7A4C"),border:"1px solid rgba(76,122,76,.35)"}}>{welledDomain.length} WellEd</span>}
                 {practiceExams.length>0 && <span style={{...mkPill("transparent","#6E3F12"),border:"1px solid rgba(154,91,31,.35)"}}>{practiceExams.length} Exam{practiceExams.length===1?"":"s"}</span>}
@@ -5441,24 +5568,13 @@ function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignm
             {worksheets.length>0 && (
               <div style={{marginBottom:welledDomain.length||practiceExams.length?14:0}}>
                 {worksheets.map(w=>(
-                  <div key={w.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid rgba(15,26,46,.06)",gap:12}}>
-                    <div style={{minWidth:0,flex:1}}>
-                      <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,color:"#0F1A2E"}}>
-                        {w.title || `${w.domain||""} — ${w.difficulty||""}`}
-                      </div>
-                      <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#66708A",marginTop:2}}>
-                        {w.subject||""} {w.domain?`· ${w.domain}`:""} {w.difficulty?`· ${w.difficulty}`:""}
-                      </div>
+                  <div key={w.id} style={{padding:"8px 0",borderBottom:"1px solid rgba(15,26,46,.06)"}}>
+                    <div style={{fontFamily:"'Fraunces',Georgia,serif",fontSize:14,color:"#0F1A2E"}}>
+                      {w.title || `${w.domain||""} — ${w.difficulty||""}`}
                     </div>
-                    {w.url ? (
-                      <a href={w.url} target="_blank" rel="noopener noreferrer" style={{
-                        fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#9A5B1F",
-                        textDecoration:"none",border:"1px solid rgba(154,91,31,.4)",padding:"4px 10px",
-                        borderRadius:3,textTransform:"uppercase",letterSpacing:1
-                      }}>Open PDF →</a>
-                    ) : (
-                      <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:"#66708A",letterSpacing:1,textTransform:"uppercase"}}>No PDF</span>
-                    )}
+                    <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:"#66708A",marginTop:2}}>
+                      {w.subject||""} {w.domain?`· ${w.domain}`:""} {w.difficulty?`· ${w.difficulty}`:""}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -5488,12 +5604,14 @@ function PortalHistoryTab({student, studentId, currentUserEntry, deepLinkAssignm
                 <button
                   onClick={()=>setOpenAssignmentId(asg.id)}
                   style={{
-                    border:"1px solid rgba(154,91,31,.4)", background:"#fff", color:"#9A5B1F",
+                    border:`1px solid ${isDone ? "rgba(15,26,46,.22)" : "rgba(154,91,31,.4)"}`,
+                    background:"#fff",
+                    color: isDone ? "#0F1A2E" : "#9A5B1F",
                     padding:"8px 16px", borderRadius:6, cursor:"pointer",
                     fontFamily:"'IBM Plex Mono',monospace", fontSize:10, letterSpacing:1,
                     textTransform:"uppercase",
                   }}
-                >Answer →</button>
+                >{isDone ? "Review →" : "Answer →"}</button>
               </div>
             )}
             {!canEdit && role === "parent" && (

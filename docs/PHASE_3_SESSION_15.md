@@ -157,6 +157,42 @@ Shipped a blank page. Root cause in Surprises #1 below. Rebuilt via `python3 bui
 
 After fixing the rules-of-hooks bug (Surprises #2). Same rebuild + redeploy. Smoke test finally passed.
 
+### Deploy 6 — `firebase deploy --only hosting` (Tier 3: student-side score surfaces)
+
+After Kiran pointed out that the score-tracking tab showed no PSM scores and that the Assignment History cards didn't visually indicate completed submissions. Built on the same submission listener the existing `TutorSubmissionsPanel` uses and wired it into `StudentPortal` at the parent level.
+
+**Tier 3 adds:**
+
+- **`useTutorSubmissions(studentId)` lifted to `StudentPortal`** — single listener shared by both the Score Tracking and Assignment History tabs. The hook name is historical (Phase 2 Session 3); semantically it's a plain listener on `/students/{sid}/submissions`. Rules at [firestore.rules:100](../firestore.rules#L100) already allow a linked student to list their own submissions via `canReadStudent` → `isLinkedToStudent` → `allow read`.
+- **`PortalHistoryTab` done pill + muted card** — each assignment card looks up a matching submission by `assignmentId`. If one exists in `status: "submitted"`:
+  - A new pill `Done · 3 / 6` in the card header, colored green/red/orange/gray by score state
+  - Card opacity dropped to 0.94 to de-emphasize completed assignments
+  - `Answer →` button relabeled to `Review →` with neutral gray border — closes [Session 14 Follow-up #7](PHASE_3_SESSION_14.md) for free
+- **`PortalHistoryTab` "No PDF" / "Open PDF →" removal** — the Phase 2 row-level PDF link/badge is deleted entirely. The PDF is accessed through the `Review →`/`Answer →` button which opens `SubmissionEditor` (which renders the PDF via `InlinePdfViewer` from the catalog join). Closes [Session 14 Follow-up #5](PHASE_3_SESSION_14.md).
+- **`PortalTrackingTab` new "PSM submissions" section** — a table above Practice Exam History listing every submitted PSM with its auto-graded score. Columns: Date / PSM / Score. Newest first. Score colored by performance. Skipped submissions render `— (reason)`. Pre-Session-15 submissions render `not graded` (see below).
+- **`isSubmissionStaleUnscored(sub)` helper** — distinguishes the ~1-3s race window between submit-click and trigger-fire from genuinely-never-graded submissions (pre-Session-15 docs, trigger crashes). A submission is stale if `status === "submitted"`, no `scoreCorrect`, no `gradeSkipReason`, no `gradedAt`, and `submittedAt > 30s ago`. Both the `Done · …` pill and the Score Tracking table use this to show `not graded` instead of the misleading `pending`.
+- **PSMs do NOT feed Score Trends.** That chart remains full-length-exam-only, as designed ([app.jsx:1208](../app.jsx#L1208)'s category filter). Whether to mix PSMs into Score Trends or build a separate PSM trends view is a deferred Session 16+ decision.
+
+Deploy 6 was hosting-only (no function or rules changes). Rebuild via `build_index.py` → `firebase deploy --only hosting`. Smoke-tested by Kiran: done pills render correctly, "No PDF" gone, "not graded" label correctly applied to pre-Session-15 submissions.
+
+### Deploy 7 — CI `FIREBASE_TOKEN` rotation (out-of-band fix after the Session 15 commit push)
+
+The Session 15 commit push (`session 15: auto-grading trigger + student/tutor score display + rules delta`) triggered the GitHub Actions Deploy to Firebase Hosting workflow, which failed after 30s:
+
+```
+Authentication Error: Your credentials are no longer valid.
+Please run firebase login --reauth
+For CI servers and headless environments, generate a new token with firebase login:ci
+```
+
+Root cause: the `FIREBASE_TOKEN` secret that Session 14 rotated (after its own expired-token failure) had expired again. This is not a session-specific bug — Firebase CI tokens have a finite lifetime and need periodic rotation. The local `firebase login --reauth` Kiran ran earlier in Session 15 does NOT share a credential store with the CI token.
+
+Fix: Kiran ran `firebase login:ci` locally and updated the GitHub secret via `gh secret set FIREBASE_TOKEN --repo kiranshay/ats-portal` (or the web UI). Subsequent pushes deploy cleanly.
+
+**Good news:** the `deploy.yml` workflow's pre-deploy verification step (`git diff --quiet -- index.html`) already catches the "forgot to rebuild" footgun. If a commit contains an `app.jsx` change but not a matching `index.html` rebuild, CI refuses to deploy with `index.html is out of date with its sources`. The Session 15 hosting deploy chain was clean on this front. **Scratch the Session 15 follow-up item about verifying build_index.py runs in CI — it already does.**
+
+**Also noted from the failure log:** the `--token` flag is deprecated and will be removed in a future major firebase-tools version. Long-term fix is `GOOGLE_APPLICATION_CREDENTIALS` with a service account key, but the deploy.yml comment says org policy blocks service-account key creation. The modern replacement is GCP Workload Identity Federation, which is significant infra work. Logged as a low-priority Session 17+ follow-up.
+
 ---
 
 ## Real submission test
@@ -346,7 +382,9 @@ Net decision: **Session 15 removes the Wise post-back entirely. Session 16 owns 
 
 5. **[Session 16 close-out] `firebase-functions` package upgrade.** Has breaking changes. Read the upgrade guide, patch any callable/trigger signature changes, redeploy. Bundle with the Node 22 upgrade since both touch `package.json`.
 
-6. **[Session 16 nice-to-have] Verify `.github/workflows/deploy.yml` runs `python3 build_index.py` before the hosting deploy step.** If it doesn't, CI deploys are silently broken the same way my first hosting deploy was. Should be a grep + possibly a one-line workflow patch.
+6. **[RESOLVED during Session 15] CI workflow already runs `build_index.py`.** Confirmed in `.github/workflows/deploy.yml` lines 42-51. CI runs the rebuild AND verifies the committed `index.html` matches the rebuild output via `git diff --quiet -- index.html`, refusing to deploy on mismatch. No action needed.
+
+6a. **[Low priority, Session 17+] Migrate CI auth away from `--token` to Workload Identity Federation.** The `--token` flag is deprecated. Service account keys are blocked by org policy. Workload Identity Federation is the supported path but requires GCP IAM configuration. Flag for Session 17+.
 
 7. **[Session 16 or dedicated polish session] Kiran's Session 15 test session generated a follow-up that isn't grader-related:** `TutorSubmissionsPanel` shows `Unreviewed — submitted ...` for auto-graded submissions that came through before Session 15 deploy. Post-Session-15 auto-graded submissions show the correct `3/6 — submitted ...` pill. Old submissions from Phase 2 Session 3 testing will stay in the unreviewed state indefinitely unless manually re-submitted or back-filled. Cosmetic only.
 
@@ -381,6 +419,13 @@ Net decision: **Session 15 removes the Wise post-back entirely. Session 16 owns 
 - [x] Real submission test executed end-to-end (`5PH4UEixC0nM7Svy50RK`, 3/6 graded, verified correct against catalog + extraction output)
 - [x] Null-answer audit run (62 nulls / 40 worksheets surfaced)
 - [x] Session 16 scope shift logged (chat→discussion, null-answer re-extraction, Node 20 upgrade)
+- [x] Tier 3: `StudentPortal` listener lifted, done pill + muted card + Review→ button on `PortalHistoryTab`
+- [x] Tier 3: "No PDF" / "Open PDF →" removed from `PortalHistoryTab` worksheet rows (Session 14 FU #5 closed)
+- [x] Tier 3: new "PSM submissions" section in `PortalTrackingTab`
+- [x] Tier 3: `isSubmissionStaleUnscored` helper distinguishes pre-Session-15 submissions from live race window
+- [x] Tier 3 deployed + smoke-tested
+- [x] CI FIREBASE_TOKEN rotated (out-of-band Deploy 7)
+- [x] GitHub Pages workflow to be disabled by Kiran via `Unpublish site` button (one-click, no repo changes)
 - [x] This doc committed to the repo
 
 ---
