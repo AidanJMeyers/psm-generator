@@ -3,7 +3,7 @@
 **Date:** 2026-04-15
 **Session type:** Data-layer fix (extraction regex + Firestore commit), Cloud Function migration (chat API → discussion API), runtime upgrade (Node 20 → 22, firebase-functions 5.x → 7.x). One deploy: functions-only. No hosting deploy (no client changes).
 **Parent docs:** [PHASE_3_SESSION_15.md](PHASE_3_SESSION_15.md) · [PHASE_3_SESSION_12.md](PHASE_3_SESSION_12.md) · [PHASE_3_SESSION_11b.md](PHASE_3_SESSION_11b.md)
-**Outcome:** All 62 silently-dropped null answers from Session 12 recovered and committed to Firestore (`questionKeys/{id}` collection now has 1,126 docs, up from 1,067). `assignToWise` migrated from the Wise chat API (`ensureAdminChat` + `sendChatMessage`) to the discussion/announcement API (`resolveClassForStudent` + `createDiscussion`). Node runtime bumped to 22; `firebase-functions` upgraded from 5.1.1 to 7.2.5. Live smoke test: Michael received the discussion notification on his Wise class.
+**Outcome:** All 62 silently-dropped null answers from Session 12 recovered and committed to Firestore (`questionKeys/{id}` collection now has 1,126 docs, up from 1,067). `assignToWise` migrated from the Wise chat API (`ensureAdminChat` + `sendChatMessage`) to the discussion/announcement API (`resolveClassForStudent` + `createDiscussion`), posting the full PSM instruction text with worksheet list, portal deep link, and practice exam instructions. Node runtime bumped to 22; `firebase-functions` upgraded from 5.1.1 to 7.2.5. Live smoke test: Michael received the discussion notification on his Wise class with correctly formatted content. Email-link auth confirmed working (Postmark approval came through).
 
 ---
 
