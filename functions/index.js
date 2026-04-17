@@ -300,30 +300,46 @@ async function resolveRecipient(cfg, studentDoc) {
 //
 // Returns: { ok: true, mode, classId, deepLink }
 
-function buildPsmDescription(deepLink, worksheets) {
-  const wsList = worksheets
-    .map((w) => `  • ${w.title}`)
-    .join("\n");
-  return [
+function buildPsmDescription(deepLink, worksheets, practiceExams) {
+  const lines = [
     `The recording of today's session has been posted on Wise. Please complete the following worksheets using the PSM instructions posted in the PSMs modules.`,
     ``,
     `<b>Important Reminder:</b> Please book your next session in advance, timing it for when you expect to have these PSMs completed. After completing the worksheets, check and mark your work according to the PSM instructions, then upload your marked work as a comment to this PSMs assignment.`,
     ``,
     `<b>Portal Link:</b> ${deepLink}`,
-    ``,
-    `<b>Worksheets:</b>`,
-    wsList,
-    ``,
-    `<b>Practice Exams:</b>`,
-    ``,
-    `Please complete Practice Exam # 1 on <b>BlueBook (College Board)</b> using the instructions for BlueBook (College Board) practice exams located in your Wise "Full Practice Exam Instructions" Module - https://bluebook.app.collegeboard.org/. Be sure to follow instructions regarding screenshots of missed questions!`,
-    ``,
-    `  • Practice Exam #1`,
-    ``,
-    `Please complete Practice Exam # 1 on <b>WellEd Labs</b> using the instructions for WellEd Labs practice exams located in your Wise "Full Practice Exam Instructions" Module - https://ats.practicetest.io/sign-in.`,
-    ``,
-    `  • Practice Exam #1`,
-  ].join("\n");
+  ];
+
+  if (worksheets.length > 0) {
+    lines.push(``, `<b>Worksheets:</b>`, ``);
+    worksheets.forEach((w) => lines.push(`  • ${w.title}`));
+  }
+
+  const bbExams = practiceExams.filter((e) => e.platform === "BlueBook");
+  const weExams = practiceExams.filter((e) => e.platform === "WellEd");
+
+  if (bbExams.length > 0 || weExams.length > 0) {
+    lines.push(``, `<b>Practice Exams:</b>`);
+  }
+
+  if (bbExams.length > 0) {
+    lines.push(
+      ``,
+      `Please complete the following on <b>BlueBook (College Board)</b> using the instructions for BlueBook (College Board) practice exams located in your Wise "Full Practice Exam Instructions" Module - https://bluebook.app.collegeboard.org/. Be sure to follow instructions regarding screenshots of missed questions!`,
+      ``
+    );
+    bbExams.forEach((e) => lines.push(`  • Practice Exam #${e.number || "?"}`));
+  }
+
+  if (weExams.length > 0) {
+    lines.push(
+      ``,
+      `Please complete the following on <b>WellEd Labs</b> using the instructions for WellEd Labs practice exams located in your Wise "Full Practice Exam Instructions" Module - https://ats.practicetest.io/sign-in.`,
+      ``
+    );
+    weExams.forEach((e) => lines.push(`  • Practice Exam #${e.number || "?"}`));
+  }
+
+  return lines.join("\n");
 }
 
 exports.assignToWise = onCall(
@@ -402,7 +418,8 @@ exports.assignToWise = onCall(
     const sessionDate = assignment.date || "";
     const discussionTitle = sessionDate ? `PSM for ${sessionDate}` : "New PSM Assignment";
     const worksheets = Array.isArray(assignment.worksheets) ? assignment.worksheets : [];
-    const description = buildPsmDescription(deepLink, worksheets);
+    const practiceExams = Array.isArray(assignment.practiceExams) ? assignment.practiceExams : [];
+    const description = buildPsmDescription(deepLink, worksheets, practiceExams);
 
     await createDiscussion(cfg, classId, {
       title: discussionTitle,

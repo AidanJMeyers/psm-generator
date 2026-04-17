@@ -19,6 +19,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 <script>
 if(window['pdfjsLib']){window['pdfjsLib'].GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}
 // Initialize Firebase
@@ -696,6 +697,38 @@ const uid=()=>Math.random().toString(36).slice(2,10);
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const sLoad=(k,fb)=>{try{const r=localStorage.getItem(k);return r?JSON.parse(r):fb;}catch{return fb;}};
 const sSave=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
+
+// Wise Cloud Function caller — posts PSM discussion to the student's Wise class.
+// Depends on firebase-functions-compat.js loaded in index.html.
+// Waits for the Firestore batch write (debounced in useEffect) to land
+// before calling the callable. Polls for the assignment doc to appear.
+function assignToWise(studentId, assignmentId, showToastFn){
+  if(!studentId||!assignmentId) return;
+  const db = window.db;
+  if(!db) return;
+  showToastFn("Posting to Wise…");
+  const fns = firebase.app().functions("us-central1");
+  const fn = fns.httpsCallable("assignToWise");
+  let attempts = 0;
+  function tryCall(){
+    fn({studentId, assignmentId})
+      .then(r=>{
+        const mode = r.data && r.data.mode;
+        showToastFn(mode==="dev-redirect" ? "Posted to Wise (dev mode)" : "Posted to Wise ✓");
+      })
+      .catch(err=>{
+        if(attempts < 3 && err.message && err.message.includes("not found")){
+          attempts++;
+          console.log("assignToWise: retry", attempts, "waiting for Firestore sync…");
+          setTimeout(tryCall, 2000);
+        } else {
+          console.error("assignToWise failed:", err);
+          showToastFn("Wise post failed — see console");
+        }
+      });
+  }
+  setTimeout(tryCall, 2000);
+}
 
 /* Soft-delete helpers. Items with a truthy `deleted` flag are in the trash;
    live() strips them for display, trash() keeps only them for the Trash tab.
@@ -2934,6 +2967,7 @@ function AppInner({authUser, onSignOut, currentUserEntry}){
       if(selWS.length>0 || weEntries.length>0 || vocabEntries.length>0 || bbNumsOut.length>0 || weNumsOut.length>0){
         setStudents(prev=>prev.map(st=>st.id===curStudent.id?{...st,assignments:[...(st.assignments||[]),entry]}:st));
         showToast(`Saved to ${curStudent.name}'s profile`);
+        assignToWise(curStudent.id, entry.id, showToast);
       }
     }
   };
@@ -3274,6 +3308,7 @@ function AppInner({authUser, onSignOut, currentUserEntry}){
     const upd=students.map(st=>st.id===profile.id?{...st,assignments:[...(st.assignments||[]),entry]}:st);
     const totalItems=ids.length+weIds.length+bbArr.length+weArr.length;
     setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setPaChk({});setPaWeChk({});setPaBBPicks([]);setPaWEPicks([]);showToast(`${totalItems} item(s) pre-assigned`);
+    assignToWise(profile.id, entry.id, showToast);
   };
   const addScore=()=>{if(!sfm.testType||!sfm.score)return;const entry={...sfm,id:uid()};const upd=students.map(st=>st.id===profile.id?{...st,scores:[...(st.scores||[]),entry]}:st);setStudents(upd);setProfile(upd.find(st=>st.id===profile.id));setSfm({date:todayStr(),testType:"",score:"",maxScore:"",notes:""});showToast("Score recorded");};
   // Soft-delete — items stay in the array with deleted:true and deletedAt,
